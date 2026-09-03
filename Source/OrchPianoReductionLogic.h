@@ -92,4 +92,87 @@ namespace ocpn
                                   int crossoverSlack,
                                   const std::vector<int>& prevNotes = {},
                                   const std::vector<int>& prevHands = {});
+
+    // ---- Phase 3: roles, importance, function-weighted drop -------------
+    //
+    // The streaming engine sees one onset group at a time (plus what it emitted
+    // for the previous group). So these are the within-group + short-history
+    // versions of ReductionRules §4-§7; the full contextual model (does this
+    // line become structural later, rhythmic-independence, static-pad detection)
+    // is the planning engine, Phase 5.
+
+    enum class Role
+    {
+        Melody = 0,
+        Bass,
+        Inner,
+        Doubling   // this pitch class already sounds in another octave of the group
+    };
+
+    struct ImportanceWeights
+    {
+        float top          = 1.0f;
+        float bottom       = 1.0f;
+        float velocity     = 0.5f;
+        float charTone     = 0.4f;   // 7ths / 9ths / tritone above the bass
+        float motion       = 0.4f;   // stepwise continuation of a previous note
+        float doublePenalty = 1.0f;
+    };
+
+    // Index into an ascending onset group that carries the melody. Registral top
+    // is the dependable streaming cue (ReductionRules §14.5: "longest note" fired
+    // only 4% of the time); a much louder note within an octave below the top
+    // overrides. `velocities` parallels `sortedNotes`. Returns -1 for an empty
+    // group.
+    int melodyIndex (const std::vector<int>& sortedNotes,
+                     const std::vector<int>& velocities) noexcept;
+
+    // Lowest sounding note is the bass, for a group of >= 2 notes. -1 otherwise.
+    int bassIndex (const std::vector<int>& sortedNotes) noexcept;
+
+    // Per-note role tags for an ascending group. `melodyIdx` / `bassIdx` from the
+    // two functions above (-1 = none).
+    std::vector<Role> tagRoles (const std::vector<int>& sortedNotes,
+                                int melodyIdx, int bassIdx);
+
+    // Per-note importance. `prevKept` = the pitches the engine emitted for the
+    // previous onset group (motion term); empty is fine.
+    std::vector<double> importanceScores (const std::vector<int>& sortedNotes,
+                                          const std::vector<int>& velocities,
+                                          const std::vector<Role>& roles,
+                                          const std::vector<int>& prevKept,
+                                          const ImportanceWeights& weights);
+
+    // Estimate 0..1 how hard an n-note chord spanning `spanSemis` is for one
+    // hand (streaming proxy: count + span; the planning engine adds a
+    // hand-transition term).
+    double handDifficulty (int noteCount, int spanSemis) noexcept;
+
+    enum class DropReason { Doubling = 0, OverVoiceBudget, OverSpan, OverDifficulty };
+
+    struct DropRecord
+    {
+        int note = 0;
+        DropReason reason = DropReason::Doubling;
+    };
+
+    struct ReduceConfig
+    {
+        int   maxVoices = 4;          // per hand
+        bool  unlimited = false;      // Repair mode: no polyphony cap
+        int   maxSpanSemis = 14;
+        float difficultyCeiling = 0.0f;   // 0 = off
+        bool  keepMelodyOctaves = true;
+        int   keepBassOctaves = 1;    // 0 Off, 1 Keep (don't drop existing), 2 Add
+    };
+
+    // Reduce one hand's ascending note list (already register-sliced). Parallel
+    // `roles` / `importance` for the same sub-list. Never drops a Melody or Bass
+    // note. Returns kept indices (ascending); appends what was removed and why to
+    // `dropped`. Pure & deterministic.
+    std::vector<int> reduceHand (const std::vector<int>& sortedNotes,
+                                 const std::vector<Role>& roles,
+                                 const std::vector<double>& importance,
+                                 const ReduceConfig& config,
+                                 std::vector<DropRecord>& dropped);
 }

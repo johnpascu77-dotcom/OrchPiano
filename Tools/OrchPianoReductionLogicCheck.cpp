@@ -1,5 +1,6 @@
 #include "OrchPianoReductionLogic.h"
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -145,6 +146,96 @@ int main()
         // Clearly-placed notes ignore history.
         check (eq (assignHands ({ 40, 90 }, 60, 5, { 59 }, { 2 }), { 1, 2 }),
                "notes outside the dead zone ignore history");
+    }
+
+    // --- Phase 3: roles ------------------------------------------------
+    {
+        std::vector<int> g { 48, 55, 60, 64, 72 }; // C3 G3 C4 E4 C5
+        std::vector<int> v { 90, 80, 80, 80, 110 };
+
+        checkInt (melodyIndex (g, v), 4, "melody = registral top by default");
+        // A much louder note within an octave below the top wins.
+        checkInt (melodyIndex ({ 60, 67, 72 }, { 127, 60, 60 }), 0,
+                  "melody = a note >=25 louder within an 8ve below the top");
+        checkInt (bassIndex (g), 0, "bass = lowest of a multi-note group");
+        checkInt (bassIndex ({ 60 }), -1, "no bass for a lone note");
+
+        const auto roles = tagRoles (g, melodyIndex (g, v), bassIndex (g));
+        check (roles[4] == Role::Melody, "top tagged Melody");
+        check (roles[0] == Role::Bass,   "bottom tagged Bass");
+        // 48, 60, 72 are all pitch class 0 - the non-core copies are doublings.
+        check (roles[2] == Role::Doubling, "middle C is a doubling of the bass pc");
+        check (roles[1] == Role::Inner && roles[3] == Role::Inner, "G3 and E4 are inner voices");
+    }
+
+    // --- Phase 3: importance ordering --------------------------------
+    {
+        std::vector<int> g { 40, 52, 55, 76 };
+        std::vector<int> v { 80, 80, 80, 100 };
+        const auto roles = tagRoles (g, melodyIndex (g, v), bassIndex (g));
+        const auto imp = importanceScores (g, v, roles, {}, ImportanceWeights {});
+        // melody (idx3) and bass (idx0) outrank the inner voices (1,2).
+        check (imp[3] > imp[1] && imp[3] > imp[2], "melody scores above inner voices");
+        check (imp[0] > imp[1] && imp[0] > imp[2], "bass scores above inner voices");
+    }
+
+    // --- Phase 3: handDifficulty ------------------------------------
+    {
+        check (handDifficulty (2, 0)  < 0.05, "2 notes, no span -> trivial");
+        check (handDifficulty (6, 16) > 0.95, "6 notes, an octave+ span -> maximal");
+        check (handDifficulty (4, 8)  > handDifficulty (3, 8), "more notes -> harder");
+        check (handDifficulty (4, 14) > handDifficulty (4, 6), "wider span -> harder");
+    }
+
+    // --- Phase 3: reduceHand ---------------------------------------
+    {
+        // C3 D3 G3 D4 G4 - D4 doubles the inner D3 and is neither a melody nor a
+        // bass octave, so it is the first to go.
+        std::vector<int> h { 48, 50, 55, 62, 67 };
+        std::vector<int> hv { 80, 80, 80, 80, 95 };
+        auto roles = tagRoles (h, melodyIndex (h, hv), bassIndex (h));
+        auto imp   = importanceScores (h, hv, roles, {}, ImportanceWeights {});
+
+        ReduceConfig cfg;
+        cfg.maxVoices = 4; cfg.maxSpanSemis = 24; cfg.keepMelodyOctaves = true; cfg.keepBassOctaves = 1;
+
+        std::vector<DropRecord> dropped;
+        auto keep = reduceHand (h, roles, imp, cfg, dropped);
+        check (! dropped.empty() && dropped[0].reason == DropReason::Doubling,
+               "reduceHand drops a non-octave doubling first");
+        check (std::find (keep.begin(), keep.end(), 3) == keep.end(), "the doubled inner D4 is gone");
+        // melody (G4, idx4) and bass (C3, idx0) always survive.
+        check (std::find (keep.begin(), keep.end(), 0) != keep.end(), "bass kept");
+        check (std::find (keep.begin(), keep.end(), 4) != keep.end(), "melody kept");
+
+        // A doubling that IS a melody / bass octave is protected by the flags.
+        std::vector<int> h2 { 48, 52, 55, 60, 64 }; // C4 = bass 8ve, E4-ish
+        std::vector<int> h2v { 80, 80, 80, 80, 95 };
+        auto r2 = tagRoles (h2, melodyIndex (h2, h2v), bassIndex (h2));
+        auto i2 = importanceScores (h2, h2v, r2, {}, ImportanceWeights {});
+        ReduceConfig keepOct; keepOct.maxVoices = 6; keepOct.maxSpanSemis = 24;
+        keepOct.keepMelodyOctaves = true; keepOct.keepBassOctaves = 1;
+        std::vector<DropRecord> d2;
+        auto k2 = reduceHand (h2, r2, i2, keepOct, d2);
+        check (d2.empty(), "keep-octave flags protect melody/bass doublings from the drop");
+
+        // Unlimited (Repair): the poly cap does not fire.
+        std::vector<int> big { 36, 40, 43, 48, 52, 55, 60 };
+        std::vector<int> bv (big.size(), 80);
+        auto br = tagRoles (big, melodyIndex (big, bv), bassIndex (big));
+        auto bi = importanceScores (big, bv, br, {}, ImportanceWeights {});
+        ReduceConfig rep; rep.unlimited = true; rep.maxVoices = 4; rep.maxSpanSemis = 36;
+        std::vector<DropRecord> repDrop;
+        auto repKeep = reduceHand (big, br, bi, rep, repDrop);
+        bool anyBudget = false;
+        for (auto& d : repDrop) anyBudget |= (d.reason == DropReason::OverVoiceBudget);
+        check (! anyBudget, "Repair (unlimited): no over-budget drops");
+
+        // difficulty ceiling forces drops.
+        ReduceConfig dc; dc.maxVoices = 12; dc.maxSpanSemis = 36; dc.difficultyCeiling = 0.3f;
+        std::vector<DropRecord> dcDrop;
+        auto dcKeep = reduceHand (big, br, bi, dc, dcDrop);
+        check (dcKeep.size() < big.size(), "difficulty ceiling 0.3 forces the hand thinner");
     }
 
     std::cout << "---------------------------\n";

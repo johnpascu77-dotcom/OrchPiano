@@ -93,9 +93,9 @@ Each phase ends green on the check tool and (from Phase 2) loadable in Bitwig.
 
 | Phase | Scope | Engine | Check-tool additions |
 |---|---|---|---|
-| **1 — mechanical core** *(this session)* | `ocpn::` LIL table + `intervalIsMuddy`; `octaveFoldInto`; `selectVoices` (register split + poly cap + span clamp + function-weighted protect — ported from `ohrp::`); `assignHands` (split + `crossoverSlack` hysteresis). No processor yet. | — | LIL floors, muddy checks, fold, voice selection, hand assignment |
-| **2 — plugin skeleton** | Processor + Editor that load as a VST3, pass MIDI through, apply Phase-1 voicing per onset group (streaming engine only), emit on ch 1-4, `dampSuccessive`, `maxRingBeats` re-strike, transport-edge safety. `operatingMode`, `hands`, `maxVoices`, `splitNote`, span/poly params. Editor: one tab, status line, melody/bass readout stub. | streaming | — |
-| **3 — importance drop** | `ocpn::importanceScore` + `dropByImportance`; textural-role tagging (melody/bass/pad/figuration/doubling); the §7 drop-priority order; `w_*` params + `difficultyCeiling`. Melody/bass ID §4 (source hints + salience). Decision-log sidecar. | streaming | importance ordering, doubling detection, role tags, ceiling budget |
+| **1 — mechanical core** ✅ `0dec153` | `ocpn::` LIL table + `intervalIsMuddy`; `octaveFoldInto`; `selectVoices` (ported from `ohrp::`); `assignHands` (split + `crossoverSlack` hysteresis). | — | 37 assertions |
+| **2 — plugin skeleton** ✅ `0dec153` (Bitwig-confirmed 2026-09-03) | Processor + Editor load as VST3, streaming onset-group hand-split reducer, 2 output channels, `dampSuccessive`, transport-edge safety. | streaming | — |
+| **3 — roles + importance drop** ✅ `<this commit>` | `ocpn::melodyIndex`/`bassIndex`/`tagRoles`/`importanceScores`/`handDifficulty`/`reduceHand`; drop doublings → over-budget → over-span → over-ceiling, melody/bass never dropped; `difficultyCeiling`, `keepBass/MelodyOctaves`, `w*` weight params; **4-voice output** (RH up/down, LH up/down on `outChannelBase..+3`); **decision-log sidecar** (`%TEMP%/orchpiano-decisions-<tag>.log`, off-thread `LogWriter`). Repair mode: no poly cap. | streaming | +15 assertions (52 total) |
 | **4 — re-voicing + idiom** | `ocpn::revoiceClose` (§8.2) + `revoice` 3-state; `octaveMovePassages`; figuration substitution (`repeatedNoteTremolo`, `arpeggioRespace`, `stringResustain`); ornament recognition; dynamic-contour reconstruction. | streaming | close-position rules, LIL-driven re-stack, tremolo/arp spelling |
 | **5 — planning engine** | lookahead ring buffer; the §1.1 pipeline (part-track → classify → harmonic rhythm → phrase seg → per-phrase hand split via KDE → drop/re-voice → voice-lead cleanup); latency-compensation report; `inputSource` (Direct / OrchCapture merged) + coordinator IPC subscription. **OrchCapture-side changes** (merged-tap emit, time-offset compensation, feedback guard) land here in parallel. | planning | KDE split point, part-tracking cost, phrase segmentation, plan determinism |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |
@@ -165,6 +165,21 @@ start.)*
 - **P1:** `selectVoices` ported near-verbatim from `ohrp::` — the register-split / poly-cap /
   span-clamp / protect logic is identical to what a piano hand needs. Piano-specific additions
   (LIL, hand assignment, octave fold) are new `ocpn::` functions alongside it, not edits to it.
+- **P2:** 2 output channels (one per hand), not 4 — superseded in P3.
+- **P3:** `selectVoices` is **not used by the processor** any more — `reduceHand` (importance-driven)
+  replaces it in `flushGroup`. `selectVoices` stays in `ocpn::` (tested) for the Transform path / as
+  a reference; revisit whether to keep it after P5.
+- **P3:** melody = **registral top** only (plus a loud-note override) — the full §4.2 salience model
+  (contour continuity, isolated-low-line bass-vs-melody, tempo-weighted note length) needs the
+  lookahead window → P5. `melodyChannels`/`bassChannels` source hints not wired yet (P5, with
+  `inputSource`).
+- **P3:** voice-within-hand split is **positional** (RH: highest kept → up-stem, rest → down-stem;
+  LH: lowest → down-stem, rest → up-stem), not real per-line streaming → P5.
+- **P3:** `w_rhythm` / `w_static` / `w_future` from §7.1 are **not** in the streaming importance
+  score (need durations / the window) → P5. `charTone` uses interval-class {1,2,6,10,11} above the
+  bass as a cheap proxy (slightly over-rewards seconds).
+- **P3:** decision-log sidecar is a plain `.log` (distinct name/format from OrchHarp's `bar:label`
+  marker sidecar) so OrchCapture does **not** ingest it as markers — it is for the user to read.
 
 ---
 

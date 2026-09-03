@@ -253,4 +253,247 @@ namespace ocpn
 
         return hands;
     }
+
+    // ---- Phase 3: roles, importance, function-weighted drop -----------
+
+    int melodyIndex (const std::vector<int>& sortedNotes,
+                     const std::vector<int>& velocities) noexcept
+    {
+        const int k = static_cast<int> (sortedNotes.size());
+        if (k == 0)
+            return -1;
+
+        const int topIdx = k - 1;
+        const int topNote = sortedNotes[static_cast<size_t> (topIdx)];
+        const int topVel  = topIdx < static_cast<int> (velocities.size())
+            ? velocities[static_cast<size_t> (topIdx)] : 100;
+
+        // A note within an octave below the top, at least 25 louder, wins.
+        int best = topIdx, bestVel = topVel;
+        for (int i = topIdx - 1; i >= 0; --i)
+        {
+            if (topNote - sortedNotes[static_cast<size_t> (i)] > 12)
+                break;
+            const int v = i < static_cast<int> (velocities.size())
+                ? velocities[static_cast<size_t> (i)] : 100;
+            if (v >= topVel + 25 && v > bestVel)
+            {
+                best = i;
+                bestVel = v;
+            }
+        }
+        return best;
+    }
+
+    int bassIndex (const std::vector<int>& sortedNotes) noexcept
+    {
+        return sortedNotes.size() >= 2 ? 0 : -1;
+    }
+
+    std::vector<Role> tagRoles (const std::vector<int>& sortedNotes,
+                                int melodyIdx, int bassIdx)
+    {
+        const int k = static_cast<int> (sortedNotes.size());
+        std::vector<Role> roles (static_cast<size_t> (std::max (0, k)), Role::Inner);
+
+        if (melodyIdx >= 0 && melodyIdx < k) roles[static_cast<size_t> (melodyIdx)] = Role::Melody;
+        if (bassIdx   >= 0 && bassIdx   < k && bassIdx != melodyIdx)
+            roles[static_cast<size_t> (bassIdx)] = Role::Bass;
+
+        // Octave / unison doublings: mark the "extra" instance, preferring to
+        // keep whichever is Melody or Bass.
+        for (int i = 0; i < k; ++i)
+        {
+            for (int j = i + 1; j < k; ++j)
+            {
+                const int a = sortedNotes[static_cast<size_t> (i)];
+                const int b = sortedNotes[static_cast<size_t> (j)];
+                if ((b - a) % 12 != 0)
+                    continue;
+
+                const bool jCore = roles[static_cast<size_t> (j)] == Role::Melody
+                                || roles[static_cast<size_t> (j)] == Role::Bass;
+                const int extra = jCore ? i : j;
+                if (roles[static_cast<size_t> (extra)] == Role::Inner)
+                    roles[static_cast<size_t> (extra)] = Role::Doubling;
+            }
+        }
+
+        return roles;
+    }
+
+    std::vector<double> importanceScores (const std::vector<int>& sortedNotes,
+                                          const std::vector<int>& velocities,
+                                          const std::vector<Role>& roles,
+                                          const std::vector<int>& prevKept,
+                                          const ImportanceWeights& w)
+    {
+        const int k = static_cast<int> (sortedNotes.size());
+        std::vector<double> out (static_cast<size_t> (std::max (0, k)), 0.0);
+        if (k == 0)
+            return out;
+
+        double meanVel = 0.0;
+        for (int i = 0; i < k; ++i)
+            meanVel += (i < static_cast<int> (velocities.size()) ? velocities[static_cast<size_t> (i)] : 100);
+        meanVel /= k;
+
+        const int bassNote = sortedNotes[0];
+
+        for (int i = 0; i < k; ++i)
+        {
+            const size_t si = static_cast<size_t> (i);
+            double s = 0.0;
+
+            if (roles[si] == Role::Melody)      s += w.top * 2.0;
+            else if (i == k - 1)                s += w.top;
+
+            if (roles[si] == Role::Bass)        s += w.bottom * 2.0;
+            else if (i == 0)                    s += w.bottom;
+
+            const double v = (i < static_cast<int> (velocities.size()) ? velocities[si] : 100);
+            s += w.velocity * (v - meanVel) / 32.0;
+
+            const int iv = mod12 (sortedNotes[si] - bassNote);
+            if (iv == 1 || iv == 2 || iv == 6 || iv == 10 || iv == 11)
+                s += w.charTone;
+
+            if (! prevKept.empty())
+            {
+                int nearest = 1 << 20;
+                for (int p : prevKept)
+                    nearest = std::min (nearest, std::abs (p - sortedNotes[si]));
+                if (nearest > 0 && nearest <= 7)
+                    s += w.motion * (1.0 - nearest / 7.0);
+            }
+
+            if (roles[si] == Role::Doubling)
+                s -= w.doublePenalty;
+
+            out[si] = s;
+        }
+
+        return out;
+    }
+
+    double handDifficulty (int noteCount, int spanSemis) noexcept
+    {
+        const double byCount = std::clamp ((noteCount - 2) / 4.0, 0.0, 1.0);
+        const double bySpan  = std::clamp (spanSemis / 16.0, 0.0, 1.0);
+        return std::clamp (0.45 * byCount + 0.55 * bySpan, 0.0, 1.0);
+    }
+
+    namespace
+    {
+        bool isOctaveOf (int a, int b) noexcept
+        {
+            return a != b && (std::abs (a - b) % 12) == 0;
+        }
+    }
+
+    std::vector<int> reduceHand (const std::vector<int>& sortedNotes,
+                                 const std::vector<Role>& roles,
+                                 const std::vector<double>& importance,
+                                 const ReduceConfig& cfg,
+                                 std::vector<DropRecord>& dropped)
+    {
+        const int k = static_cast<int> (sortedNotes.size());
+        std::vector<int> kept;
+        for (int i = 0; i < k; ++i)
+            kept.push_back (i);
+        if (k <= 1)
+            return kept;
+
+        auto noteAt      = [&] (int idxInKept) { return sortedNotes[static_cast<size_t> (kept[static_cast<size_t> (idxInKept)])]; };
+        auto roleAt      = [&] (int idxInKept) { return roles[static_cast<size_t> (kept[static_cast<size_t> (idxInKept)])]; };
+        auto impAt       = [&] (int idxInKept) { return importance[static_cast<size_t> (kept[static_cast<size_t> (idxInKept)])]; };
+        auto isProtected = [&] (int idxInKept)
+        {
+            const auto r = roleAt (idxInKept);
+            return r == Role::Melody || r == Role::Bass;
+        };
+
+        int melodyNote = -1, bassNote = -1;
+        for (int i = 0; i < k; ++i)
+        {
+            if (roles[static_cast<size_t> (i)] == Role::Melody) melodyNote = sortedNotes[static_cast<size_t> (i)];
+            if (roles[static_cast<size_t> (i)] == Role::Bass)   bassNote   = sortedNotes[static_cast<size_t> (i)];
+        }
+
+        auto dropAt = [&] (int idxInKept, DropReason why)
+        {
+            dropped.push_back ({ noteAt (idxInKept), why });
+            kept.erase (kept.begin() + idxInKept);
+        };
+
+        // --- 1. doublings ---------------------------------------------
+        for (int i = static_cast<int> (kept.size()) - 1; i >= 0; --i)
+        {
+            if (roleAt (i) != Role::Doubling)
+                continue;
+            const int n = noteAt (i);
+            if (cfg.keepMelodyOctaves && melodyNote >= 0 && isOctaveOf (n, melodyNote)) continue;
+            if (cfg.keepBassOctaves != 0 && bassNote >= 0 && isOctaveOf (n, bassNote))  continue;
+            dropAt (i, DropReason::Doubling);
+        }
+
+        auto span = [&] ()
+        {
+            return kept.empty() ? 0 : noteAt (static_cast<int> (kept.size()) - 1) - noteAt (0);
+        };
+        auto lowestImportanceUnprotected = [&] () -> int
+        {
+            int victim = -1;
+            double worst = 1e18;
+            for (int i = 0; i < static_cast<int> (kept.size()); ++i)
+            {
+                if (isProtected (i))
+                    continue;
+                if (impAt (i) < worst) { worst = impAt (i); victim = i; }
+            }
+            return victim;
+        };
+
+        // --- 2. polyphony cap ---------------------------------------
+        if (! cfg.unlimited)
+        {
+            while (static_cast<int> (kept.size()) > std::max (1, cfg.maxVoices))
+            {
+                const int victim = lowestImportanceUnprotected();
+                if (victim < 0) break;
+                dropAt (victim, DropReason::OverVoiceBudget);
+            }
+        }
+
+        // --- 3. span clamp: drop the lower-importance non-protected
+        //        note that is a current span extreme. ------------------
+        while (span() > cfg.maxSpanSemis && kept.size() > 1)
+        {
+            const int last = static_cast<int> (kept.size()) - 1;
+            int victim = -1;
+            double worst = 1e18;
+            for (int i : { 0, last })
+            {
+                if (isProtected (i)) continue;
+                if (impAt (i) < worst) { worst = impAt (i); victim = i; }
+            }
+            if (victim < 0)
+                break; // both extremes protected - protect wins over span
+            dropAt (victim, DropReason::OverSpan);
+        }
+
+        // --- 4. difficulty ceiling --------------------------------
+        if (cfg.difficultyCeiling > 0.0f)
+        {
+            while (kept.size() > 1
+                   && handDifficulty (static_cast<int> (kept.size()), span()) > cfg.difficultyCeiling)
+            {
+                const int victim = lowestImportanceUnprotected();
+                if (victim < 0) break;
+                dropAt (victim, DropReason::OverDifficulty);
+            }
+        }
+
+        return kept;
+    }
 }

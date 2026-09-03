@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 2 (streaming hand-split reducer)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 3 (roles + importance drop, 4 voices, decision log)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
@@ -22,13 +22,19 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addChoiceRow ("hands", "Hands", { "Both", "Left", "Right" });
     addChoiceRow ("maxVoices", "Max Voices", { "4", "6" });
     addSliderRow ("splitNote", "Hand Split Note", 0, 127);
-    addSliderRow ("maxNotesPerHand", "Notes / Hand", 2, 6);
+    addSliderRow ("maxNotesPerHand", "Notes / Hand (Reduce)", 2, 8);
     addSliderRow ("maxSpan", "Max Hand Span (st)", 8, 16);
     addSliderRow ("crossoverSlack", "Crossover Slack (st)", 0, 12);
-    addChoiceRow ("protect", "Protect", { "None", "Lowest", "Highest", "Both Ends" });
+    addSliderRow ("difficultyCeiling", "Difficulty Ceiling (0=off)", 0.0, 1.0);
+    addChoiceRow ("keepBassOctaves", "Keep Bass Octaves", { "Off", "Keep", "Add" });
+    addToggleRow ("keepMelodyOctaves", "Keep Melody Octaves");
     addToggleRow ("dampSuccessive", "Damp On Next Attack");
+    addToggleRow ("decisionLog", "Write Decision Log");
     addSliderRow ("onsetWindowMs", "Onset Window (ms)", 5, 200);
-    addSliderRow ("outChannelBase", "Out Channel (Right; Left = +1)", 1, 15);
+    addSliderRow ("outChannelBase", "Out Channel Base (+0..+3)", 1, 13);
+    addSliderRow ("wMelodyBass", "Weight: Melody/Bass", 0.0, 2.0);
+    addSliderRow ("wVelocity", "Weight: Velocity", 0.0, 2.0);
+    addSliderRow ("wDouble", "Weight: Doubling Penalty", 0.0, 2.0);
 
     statusLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
     statusLabel.setColour (juce::Label::textColourId, juce::Colours::aqua);
@@ -64,8 +70,11 @@ void OrchPianoAudioProcessorEditor::addSliderRow (const juce::String& paramId, c
     row->label.setText (text, juce::dontSendNotification);
     addAndMakeVisible (row->label);
 
-    auto s = std::make_unique<juce::Slider>(juce::Slider::IncDecButtons, juce::Slider::TextBoxLeft);
-    s->setRange (lo, hi, 1.0);
+    const double interval = (hi - lo) <= 2.0 ? 0.01 : 1.0;
+    auto s = std::make_unique<juce::Slider>(
+        interval < 1.0 ? juce::Slider::LinearHorizontal : juce::Slider::IncDecButtons,
+        juce::Slider::TextBoxLeft);
+    s->setRange (lo, hi, interval);
     s->setTextBoxStyle (juce::Slider::TextBoxLeft, false, 48, kRowH - 6);
     addAndMakeVisible (*s);
     row->sliderAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(
@@ -116,17 +125,19 @@ void OrchPianoAudioProcessorEditor::resized()
 
 void OrchPianoAudioProcessorEditor::timerCallback()
 {
-    const int seen  = audioProcessor.getLastSeenForUi();
-    const int kept  = audioProcessor.getLastKeptForUi();
-    const int left  = audioProcessor.getLastLeftForUi();
-    const int right = audioProcessor.getLastRightForUi();
+    const int seen    = audioProcessor.getLastSeenForUi();
+    const int kept    = audioProcessor.getLastKeptForUi();
+    const int dropped = audioProcessor.getLastDroppedForUi();
+    const int mel     = audioProcessor.getLastMelodyForUi();
+    const int bass    = audioProcessor.getLastBassForUi();
 
     auto noteName = [] (int n) {
         return n < 0 ? juce::String ("-")
                      : juce::MidiMessage::getMidiNoteName (n, true, true, 3);
     };
 
-    statusLabel.setText ("group: " + juce::String (seen) + " in / " + juce::String (kept)
-                         + " kept   L top " + noteName (left) + "   R top " + noteName (right),
+    statusLabel.setText ("group " + juce::String (seen) + " in / " + juce::String (kept)
+                         + " kept / " + juce::String (dropped) + " dropped    melody "
+                         + noteName (mel) + "    bass " + noteName (bass),
                          juce::dontSendNotification);
 }

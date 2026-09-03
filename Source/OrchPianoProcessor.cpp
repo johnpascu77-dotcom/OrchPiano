@@ -4,31 +4,71 @@
 #include <algorithm>
 #include <map>
 
-namespace
+// ============================================================================
+
+// Off-thread writer for the decision-log sidecar. Sleeps until the audio thread
+// signals a transport stop, then flushes the take's drop log to a temp file for
+// the user to review (which notes were dropped, from which bar, and why).
+struct OrchPianoAudioProcessor::LogWriter : juce::Thread
 {
-    constexpr int kProtectBothEnds = 3;
-}
+    explicit LogWriter (OrchPianoAudioProcessor& ownerIn)
+        : juce::Thread ("OrchPianoDecisionLog"), owner (ownerIn) {}
+
+    void run() override
+    {
+        while (! threadShouldExit())
+        {
+            wake.wait (-1);
+            if (threadShouldExit())
+                break;
+            owner.writeDecisionFile();
+        }
+    }
+
+    OrchPianoAudioProcessor& owner;
+    juce::WaitableEvent wake;
+};
+
+// ============================================================================
 
 OrchPianoAudioProcessor::OrchPianoAudioProcessor()
     : AudioProcessor (BusesProperties()),
       parameters (*this, nullptr, "OrchPianoParameters", createParameterLayout())
 {
-    operatingModeParam   = parameters.getRawParameterValue ("operatingMode");
-    handsParam           = parameters.getRawParameterValue ("hands");
-    maxVoicesParam       = parameters.getRawParameterValue ("maxVoices");
-    splitNoteParam       = parameters.getRawParameterValue ("splitNote");
-    maxNotesPerHandParam = parameters.getRawParameterValue ("maxNotesPerHand");
-    maxSpanParam         = parameters.getRawParameterValue ("maxSpan");
-    crossoverSlackParam  = parameters.getRawParameterValue ("crossoverSlack");
-    protectParam         = parameters.getRawParameterValue ("protect");
-    dampSuccessiveParam  = parameters.getRawParameterValue ("dampSuccessive");
-    onsetWindowMsParam   = parameters.getRawParameterValue ("onsetWindowMs");
-    outChannelBaseParam  = parameters.getRawParameterValue ("outChannelBase");
+    operatingModeParam    = parameters.getRawParameterValue ("operatingMode");
+    handsParam            = parameters.getRawParameterValue ("hands");
+    maxVoicesParam        = parameters.getRawParameterValue ("maxVoices");
+    splitNoteParam        = parameters.getRawParameterValue ("splitNote");
+    maxNotesPerHandParam  = parameters.getRawParameterValue ("maxNotesPerHand");
+    maxSpanParam          = parameters.getRawParameterValue ("maxSpan");
+    crossoverSlackParam   = parameters.getRawParameterValue ("crossoverSlack");
+    dampSuccessiveParam   = parameters.getRawParameterValue ("dampSuccessive");
+    onsetWindowMsParam    = parameters.getRawParameterValue ("onsetWindowMs");
+    outChannelBaseParam   = parameters.getRawParameterValue ("outChannelBase");
+    difficultyCeilingParam = parameters.getRawParameterValue ("difficultyCeiling");
+    keepBassOctavesParam  = parameters.getRawParameterValue ("keepBassOctaves");
+    keepMelodyOctavesParam = parameters.getRawParameterValue ("keepMelodyOctaves");
+    decisionLogParam      = parameters.getRawParameterValue ("decisionLog");
+    wMelodyBassParam      = parameters.getRawParameterValue ("wMelodyBass");
+    wVelocityParam        = parameters.getRawParameterValue ("wVelocity");
+    wDoubleParam          = parameters.getRawParameterValue ("wDouble");
 
     resetNoteMap();
+
+    logTag = juce::String::toHexString (juce::Random::getSystemRandom().nextInt()).paddedLeft ('0', 8);
+    logWriter = std::make_unique<LogWriter> (*this);
+    logWriter->startThread();
 }
 
-OrchPianoAudioProcessor::~OrchPianoAudioProcessor() = default;
+OrchPianoAudioProcessor::~OrchPianoAudioProcessor()
+{
+    if (logWriter != nullptr)
+    {
+        logWriter->signalThreadShouldExit();
+        logWriter->wake.signal();
+        logWriter->stopThread (2000);
+    }
+}
 
 juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::createParameterLayout()
 {
@@ -51,7 +91,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
         juce::ParameterID { "splitNote", 1 }, "Hand Split Note", 0, 127, 60));
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
-        juce::ParameterID { "maxNotesPerHand", 1 }, "Notes / Hand", 2, 6, 4));
+        juce::ParameterID { "maxNotesPerHand", 1 }, "Notes / Hand (Reduce)", 2, 8, 4));
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "maxSpan", 1 }, "Max Hand Span (st)", 8, 16, 14));
@@ -59,18 +99,39 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "crossoverSlack", 1 }, "Crossover Slack (st)", 0, 12, 5));
 
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID { "difficultyCeiling", 1 }, "Difficulty Ceiling (0 = off)",
+        juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.0f));
+
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
-        juce::ParameterID { "protect", 1 }, "Protect",
-        juce::StringArray { "None", "Lowest", "Highest", "Both Ends" }, kProtectBothEnds));
+        juce::ParameterID { "keepBassOctaves", 1 }, "Keep Bass Octaves",
+        juce::StringArray { "Off", "Keep", "Add" }, 1));
+
+    params.push_back (std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { "keepMelodyOctaves", 1 }, "Keep Melody Octaves", true));
 
     params.push_back (std::make_unique<juce::AudioParameterBool>(
         juce::ParameterID { "dampSuccessive", 1 }, "Damp On Next Attack", true));
+
+    params.push_back (std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { "decisionLog", 1 }, "Write Decision Log", true));
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "onsetWindowMs", 1 }, "Onset Window (ms)", 5, 200, 90));
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
-        juce::ParameterID { "outChannelBase", 1 }, "Out Channel (Right; Left = +1)", 1, 15, 1));
+        juce::ParameterID { "outChannelBase", 1 }, "Out Channel Base (voices +0..+3)", 1, 13, 1));
+
+    // Advanced - importance weights.
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID { "wMelodyBass", 1 }, "Weight: Melody/Bass",
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.01f), 1.0f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID { "wVelocity", 1 }, "Weight: Velocity",
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.01f), 0.5f));
+    params.push_back (std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID { "wDouble", 1 }, "Weight: Doubling Penalty",
+        juce::NormalisableRange<float> (0.0f, 2.0f, 0.01f), 1.0f));
 
     return { params.begin(), params.end() };
 }
@@ -82,7 +143,6 @@ void OrchPianoAudioProcessor::prepareToPlay (double newSampleRate, int)
 }
 
 void OrchPianoAudioProcessor::releaseResources() {}
-
 bool OrchPianoAudioProcessor::isBusesLayoutSupported (const BusesLayout&) const { return true; }
 
 void OrchPianoAudioProcessor::resetNoteMap()
@@ -91,6 +151,7 @@ void OrchPianoAudioProcessor::resetNoteMap()
     currentGroup.clear();
     prevGroupNotes.clear();
     prevGroupHands.clear();
+    prevKeptNotes.clear();
 }
 
 void OrchPianoAudioProcessor::dampAllRinging (juce::MidiBuffer& output, int sample)
@@ -101,7 +162,7 @@ void OrchPianoAudioProcessor::dampAllRinging (juce::MidiBuffer& output, int samp
         {
             output.addEvent (juce::MidiMessage::noteOff (juce::jlimit (1, 16, t.outputChannel), t.outputNote),
                              juce::jmax (0, sample));
-            t.outputNote = -2; // damped: swallow the eventual input note-off
+            t.outputNote = -2;
         }
     }
 }
@@ -119,99 +180,209 @@ void OrchPianoAudioProcessor::handleNoteOff (const juce::MidiMessage& message, i
         if (it->outputNote >= 0)
             output.addEvent (juce::MidiMessage::noteOff (juce::jlimit (1, 16, it->outputChannel), it->outputNote),
                              juce::jmax (0, sample));
-        // outputNote == -2 (already damped) or -1 (dropped): just consume.
         activeNotes.erase (it);
         return;
     }
 }
 
-void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSample)
+void OrchPianoAudioProcessor::logDrop (double ppq, const ocpn::DropRecord& d)
+{
+    static const char* reason[] = { "doubling", "over voice budget", "over span", "over difficulty" };
+    const double bar = beatsPerBar > 0.0 ? ppq / beatsPerBar + 1.0 : 1.0;
+    juce::String line;
+    line << "bar " << juce::String (bar, 2) << "   drop "
+         << juce::MidiMessage::getMidiNoteName (d.note, true, true, 3)
+         << " (" << d.note << ")   " << reason[static_cast<int> (d.reason)];
+
+    const juce::ScopedLock sl (decisionLock);
+    if (decisionLines.size() < 8192)
+        decisionLines.push_back (line);
+}
+
+void OrchPianoAudioProcessor::writeDecisionFile()
+{
+    std::vector<juce::String> lines;
+    {
+        const juce::ScopedLock sl (decisionLock);
+        lines.swap (decisionLines);
+    }
+    if (lines.empty())
+        return;
+
+    juce::String body;
+    body << "OrchPiano decision log - " << juce::Time::getCurrentTime().toString (true, true) << "\n";
+    body << lines.size() << " drops\n\n";
+    for (const auto& l : lines)
+        body << l << "\n";
+
+    juce::File::getSpecialLocation (juce::File::tempDirectory)
+        .getChildFile ("orchpiano-decisions-" + logTag + ".log")
+        .replaceWithText (body);
+}
+
+// ---- the core: reduce one onset group ------------------------------------
+
+void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSample,
+                                          double blockStartPpq, double ppqPerSample)
 {
     if (currentGroup.empty())
         return;
 
     const int sample = juce::jmax (0, flushSample);
+    const double groupPpq = juce::jmax (0.0, blockStartPpq + flushSample * ppqPerSample);
 
     // Unique pitches, ascending; keep the loudest onset per pitch.
     std::map<int, HeldOn> byPitch;
     for (const auto& h : currentGroup)
     {
-        auto existing = byPitch.find (h.note);
-        if (existing == byPitch.end() || h.velocity > existing->second.velocity)
+        auto e = byPitch.find (h.note);
+        if (e == byPitch.end() || h.velocity > e->second.velocity)
             byPitch[h.note] = h;
     }
 
-    std::vector<int> sortedNotes;
-    sortedNotes.reserve (byPitch.size());
-    for (const auto& kv : byPitch)
-        sortedNotes.push_back (kv.first);
+    std::vector<int> notes, vels;
+    notes.reserve (byPitch.size());
+    for (const auto& kv : byPitch) { notes.push_back (kv.first); vels.push_back (kv.second.velocity); }
 
-    const int handsMode  = handsParam        != nullptr ? juce::roundToInt (handsParam->load()) : 0;
-    const int splitNote  = splitNoteParam    != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
-    const int slack      = crossoverSlackParam != nullptr ? juce::roundToInt (crossoverSlackParam->load()) : 5;
-    const int perHand    = maxNotesPerHandParam != nullptr ? juce::roundToInt (maxNotesPerHandParam->load()) : 4;
-    const int maxSpan    = maxSpanParam      != nullptr ? juce::roundToInt (maxSpanParam->load()) : 14;
-    const int protect    = protectParam      != nullptr ? juce::roundToInt (protectParam->load()) : kProtectBothEnds;
-    const int chanBase   = outChannelBaseParam != nullptr ? juce::roundToInt (outChannelBaseParam->load()) : 1;
-    const bool damp      = dampSuccessiveParam != nullptr && dampSuccessiveParam->load() >= 0.5f;
+    const int    mode      = operatingModeParam   != nullptr ? juce::roundToInt (operatingModeParam->load()) : 1;
+    const bool   repair    = mode == 0;
+    const int    handsMode = handsParam           != nullptr ? juce::roundToInt (handsParam->load()) : 0;
+    const int    splitNote = splitNoteParam       != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
+    const int    slack     = crossoverSlackParam  != nullptr ? juce::roundToInt (crossoverSlackParam->load()) : 5;
+    const int    perHand   = maxNotesPerHandParam != nullptr ? juce::roundToInt (maxNotesPerHandParam->load()) : 4;
+    const int    maxSpan   = maxSpanParam         != nullptr ? juce::roundToInt (maxSpanParam->load()) : 14;
+    const int    chanBase  = outChannelBaseParam  != nullptr ? juce::roundToInt (outChannelBaseParam->load()) : 1;
+    const bool   damp      = dampSuccessiveParam  != nullptr && dampSuccessiveParam->load() >= 0.5f;
+    const bool   doLog     = decisionLogParam     != nullptr && decisionLogParam->load() >= 0.5f;
+    const float  ceiling   = (repair || difficultyCeilingParam == nullptr) ? 0.0f : difficultyCeilingParam->load();
+    const int    keepBassO = keepBassOctavesParam != nullptr ? juce::roundToInt (keepBassOctavesParam->load()) : 1;
+    const bool   keepMelO  = keepMelodyOctavesParam == nullptr || keepMelodyOctavesParam->load() >= 0.5f;
 
-    const auto handAssign = ocpn::assignHands (sortedNotes, splitNote, slack, prevGroupNotes, prevGroupHands);
+    ocpn::ImportanceWeights w;
+    const float wmb = wMelodyBassParam != nullptr ? wMelodyBassParam->load() : 1.0f;
+    w.top = wmb; w.bottom = wmb;
+    w.velocity = wVelocityParam != nullptr ? wVelocityParam->load() : 0.5f;
+    w.doublePenalty = wDoubleParam != nullptr ? wDoubleParam->load() : 1.0f;
+
+    // --- roles + importance on the whole group ---
+    const int melIdx  = ocpn::melodyIndex (notes, vels);
+    const int bassIdx = ocpn::bassIndex (notes);
+    const auto roles  = ocpn::tagRoles (notes, melIdx, bassIdx);
+    const auto imp    = ocpn::importanceScores (notes, vels, roles, prevKeptNotes, w);
+
+    const auto handAssign = ocpn::assignHands (notes, splitNote, slack, prevGroupNotes, prevGroupHands);
 
     if (damp)
         dampAllRinging (output, sample);
 
-    std::vector<int> keptNotes, keptHands;
-    int emitted = 0, topLeft = -1, topRight = -1;
+    std::vector<int> keptNotes, keptHands, keptForMotion;
+    int emitted = 0, melodyOut = -1, bassOut = -1, droppedCount = 0;
 
     for (int hand = 1; hand <= 2; ++hand)
     {
-        if (handsMode == 1 && hand != 1) continue; // Left only
-        if (handsMode == 2 && hand != 2) continue; // Right only
+        if (handsMode == 1 && hand != 1) continue;
+        if (handsMode == 2 && hand != 2) continue;
 
-        std::vector<int> sub;
-        for (size_t i = 0; i < sortedNotes.size(); ++i)
-            if (handAssign[i] == hand)
-                sub.push_back (sortedNotes[i]);
-
+        std::vector<int> sub, subVel;
+        std::vector<ocpn::Role> subRoles;
+        std::vector<double> subImp;
+        for (size_t i = 0; i < notes.size(); ++i)
+        {
+            if (handAssign[i] != hand) continue;
+            sub.push_back (notes[i]);
+            subVel.push_back (vels[i]);
+            subRoles.push_back (roles[i]);
+            subImp.push_back (imp[i]);
+        }
         if (sub.empty())
             continue;
 
-        ocpn::VoiceConfig cfg;
-        cfg.hand = 0;            // already register-split by assignHands
-        cfg.splitMode = 0;
+        // If the group's melody/bass didn't land in this hand, the top/bottom of
+        // this hand's slice still gets protected as a local lead/anchor.
+        bool hasMelody = false, hasBass = false;
+        for (auto r : subRoles) { hasMelody |= (r == ocpn::Role::Melody); hasBass |= (r == ocpn::Role::Bass); }
+        if (! hasMelody && hand == 2) subRoles.back()  = ocpn::Role::Melody;
+        if (! hasBass   && hand == 1) subRoles.front() = ocpn::Role::Bass;
+
+        ocpn::ReduceConfig cfg;
         cfg.maxVoices = perHand;
+        cfg.unlimited = repair;
         cfg.maxSpanSemis = maxSpan;
-        cfg.protect = protect;
+        cfg.difficultyCeiling = ceiling;
+        cfg.keepMelodyOctaves = keepMelO;
+        cfg.keepBassOctaves = keepBassO;
 
-        const auto keep = ocpn::selectVoices (sub, cfg);
-        const int outCh = juce::jlimit (1, 16, hand == 2 ? chanBase : chanBase + 1);
+        std::vector<ocpn::DropRecord> dropped;
+        const auto keep = ocpn::reduceHand (sub, subRoles, subImp, cfg, dropped);
 
-        for (int idx : keep)
+        for (const auto& d : dropped)
         {
+            ++droppedCount;
+            if (doLog) logDrop (groupPpq, d);
+        }
+
+        // Four Dorico voices: RH up-stem = highest kept (chanBase+0), RH
+        // down-stem the rest (chanBase+1); LH down-stem = lowest kept
+        // (chanBase+3), LH up-stem the rest (chanBase+2). Real per-line voice
+        // streaming is Phase 5.
+        const int rhTop  = keep.empty() ? -1 : keep.back();
+        const int lhBot  = keep.empty() ? -1 : keep.front();
+
+        for (size_t ki = 0; ki < keep.size(); ++ki)
+        {
+            const int idx = keep[ki];
             const int pitch = sub[static_cast<size_t> (idx)];
             const auto& src = byPitch[pitch];
+            const int outCh = juce::jlimit (1, 16, hand == 2
+                ? (idx == rhTop ? chanBase     : chanBase + 1)
+                : (idx == lhBot ? chanBase + 3 : chanBase + 2));
 
-            output.addEvent (juce::MidiMessage::noteOn (outCh, pitch, src.velocity), sample);
+            output.addEvent (juce::MidiMessage::noteOn (outCh, pitch, static_cast<juce::uint8> (subVel[static_cast<size_t> (idx)])), sample);
             activeNotes.push_back ({ src.channel, pitch, pitch, outCh });
 
             keptNotes.push_back (pitch);
             keptHands.push_back (hand);
+            keptForMotion.push_back (pitch);
             ++emitted;
-            if (hand == 1) topLeft  = juce::jmax (topLeft,  pitch);
-            if (hand == 2) topRight = juce::jmax (topRight, pitch);
+
+            if (subRoles[static_cast<size_t> (idx)] == ocpn::Role::Melody) melodyOut = pitch;
+            if (subRoles[static_cast<size_t> (idx)] == ocpn::Role::Bass)   bassOut   = pitch;
+        }
+
+        // keepBassOctaves == Add: put an octave under the bass if there isn't
+        // one already and it doesn't fall below its low-interval limit.
+        if (keepBassO == 2 && hand == 1 && ! keep.empty())
+        {
+            const int bassPitch = sub[static_cast<size_t> (keep.front())];
+            const int lower = bassPitch - 12;
+            const int lhDownCh = juce::jlimit (1, 16, chanBase + 3);
+            bool haveLower = false;
+            for (int idx : keep) if (sub[static_cast<size_t> (idx)] == lower) haveLower = true;
+            if (! haveLower && lower >= 21
+                && ! ocpn::intervalIsMuddy (lower, bassPitch, ocpn::LilStrictness::Loose))
+            {
+                output.addEvent (juce::MidiMessage::noteOn (lhDownCh, lower,
+                    static_cast<juce::uint8> (subVel[static_cast<size_t> (keep.front())])), sample);
+                activeNotes.push_back ({ byPitch[bassPitch].channel, bassPitch, lower, lhDownCh });
+                ++emitted;
+            }
         }
     }
 
     prevGroupNotes.swap (keptNotes);
     prevGroupHands.swap (keptHands);
+    prevKeptNotes.swap (keptForMotion);
 
-    lastSeen.store (static_cast<int> (sortedNotes.size()));
+    lastSeen.store (static_cast<int> (notes.size()));
     lastKept.store (emitted);
-    lastLeft.store (topLeft);
-    lastRight.store (topRight);
+    lastMelody.store (melodyOut);
+    lastBass.store (bassOut);
+    lastDropped.store (droppedCount);
 
     currentGroup.clear();
 }
+
+// ---- processBlock -------------------------------------------------------
 
 void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
@@ -220,9 +391,22 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const int numSamples = buffer.getNumSamples();
 
     bool playing = false;
+    double bpm = 120.0;
+    double blockStartPpq = integratedPpq;
+    double hostBeatsPerBar = 4.0;
     if (auto* ph = getPlayHead())
+    {
         if (const auto pos = ph->getPosition())
+        {
             playing = pos->getIsPlaying();
+            if (const auto b = pos->getBpm(); b && *b > 0.0) bpm = *b;
+            if (const auto p = pos->getPpqPosition()) blockStartPpq = *p;
+            if (const auto ts = pos->getTimeSignature(); ts && ts->numerator > 0 && ts->denominator > 0)
+                hostBeatsPerBar = ts->numerator * 4.0 / ts->denominator;
+        }
+    }
+    const double ppqPerSample = sampleRate > 0.0 ? (bpm / 60.0) / sampleRate : 0.0;
+    integratedPpq = blockStartPpq + numSamples * ppqPerSample;
 
     const int onsetWindowSamples = juce::jmax (1, juce::roundToInt (
         (onsetWindowMsParam != nullptr ? juce::jlimit (5, 200, juce::roundToInt (onsetWindowMsParam->load())) : 90)
@@ -232,29 +416,30 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
     juce::MidiBuffer output;
 
-    // Transport edges: flush a half-built group, damp anything ringing.
     if (! playing && wasPlaying)
     {
-        flushGroup (output, 0);
+        flushGroup (output, 0, blockStartPpq, ppqPerSample);
         dampAllRinging (output, 0);
         activeNotes.clear();
         prevGroupNotes.clear();
         prevGroupHands.clear();
+        prevKeptNotes.clear();
+        if (logWriter != nullptr)
+            logWriter->wake.signal();          // flush the take's decision log
     }
     else if (playing && ! wasPlaying)
     {
         prevGroupNotes.clear();
         prevGroupHands.clear();
+        prevKeptNotes.clear();
+        beatsPerBar = hostBeatsPerBar > 0.0 ? hostBeatsPerBar : 4.0;
+        const juce::ScopedLock sl (decisionLock);
+        decisionLines.clear();
     }
     wasPlaying = playing;
 
-    // Transform mode is not built yet - pass everything through untouched so the
-    // plugin is transparent rather than wrong.
     if (transform)
-    {
-        wasPlaying = playing;
-        return;
-    }
+        return; // not built yet - transparent pass-through
 
     for (const auto metadata : midiMessages)
     {
@@ -265,7 +450,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         {
             if (! currentGroup.empty()
                 && samplePosition - currentGroupStartSample > onsetWindowSamples)
-                flushGroup (output, currentGroupStartSample);
+                flushGroup (output, currentGroupStartSample, blockStartPpq, ppqPerSample);
 
             if (currentGroup.empty())
                 currentGroupStartSample = samplePosition;
@@ -278,7 +463,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         if (message.isNoteOff())
         {
             if (! currentGroup.empty())
-                flushGroup (output, currentGroupStartSample);
+                flushGroup (output, currentGroupStartSample, blockStartPpq, ppqPerSample);
             handleNoteOff (message, samplePosition, output);
             continue;
         }
@@ -292,16 +477,16 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             continue;
         }
 
-        output.addEvent (message, samplePosition); // CCs, pitch bend, etc. pass through
+        output.addEvent (message, samplePosition); // CCs etc. pass through
     }
 
-    // Close the open group at the block end (a chord split by a buffer boundary
-    // becomes two mini-groups a few ms apart - DAW chords land on one tick).
     if (! currentGroup.empty())
-        flushGroup (output, juce::jmax (0, numSamples - 1));
+        flushGroup (output, juce::jmax (0, numSamples - 1), blockStartPpq, ppqPerSample);
 
     midiMessages.swapWith (output);
 }
+
+// ---- boilerplate -------------------------------------------------------
 
 juce::AudioProcessorEditor* OrchPianoAudioProcessor::createEditor()
 {
