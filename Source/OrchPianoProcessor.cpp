@@ -480,8 +480,12 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         output.addEvent (message, samplePosition); // CCs etc. pass through
     }
 
+    // Close the open group at the block end, emitting at the group's *own*
+    // onset sample - not the block boundary, which would shove the notes
+    // forward by up to a buffer's worth of time and make Dorico tuplet them.
     if (! currentGroup.empty())
-        flushGroup (output, juce::jmax (0, numSamples - 1), blockStartPpq, ppqPerSample);
+        flushGroup (output, juce::jlimit (0, juce::jmax (0, numSamples - 1), currentGroupStartSample),
+                    blockStartPpq, ppqPerSample);
 
     midiMessages.swapWith (output);
 }
