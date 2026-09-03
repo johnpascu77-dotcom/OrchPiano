@@ -589,7 +589,13 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     if (! playing && wasPlaying)
     {
         flushGroup (output, 0, blockStartPpq, ppqPerSample);
-        flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples, true);
+        // The planning buffer at this point holds only the not-yet-ripe tail
+        // (~lookaheadBeats of material that never got its full context). Dumping
+        // it all at one instant makes a loud phantom cluster and it can't be
+        // captured post-stop anyway - drop it. Run the take a bar or two past the
+        // last real note; P5d (OrchCapture time-offset) will let it drain cleanly.
+        planBuf.clear();
+        planBufCount.store (0);
         dampAllRinging (output, 0);
         activeNotes.clear();
         prevGroupNotes.clear();
