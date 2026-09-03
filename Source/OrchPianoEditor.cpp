@@ -32,6 +32,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addToggleRow ("decisionLog", "Write Decision Log");
     addSliderRow ("onsetWindowMs", "Onset Window (ms)", 5, 200);
     addSliderRow ("outChannelBase", "Out Channel Base (+0..+3)", 1, 13);
+    addChoiceRow ("handVoices", "Voices per Hand", { "1 (clean 2-staff)", "2 (lead + accomp.)" });
     addSliderRow ("wMelodyBass", "Weight: Melody/Bass", 0.0, 2.0);
     addSliderRow ("wVelocity", "Weight: Velocity", 0.0, 2.0);
     addSliderRow ("wDouble", "Weight: Doubling Penalty", 0.0, 2.0);

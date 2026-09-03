@@ -49,6 +49,7 @@ OrchPianoAudioProcessor::OrchPianoAudioProcessor()
     keepBassOctavesParam  = parameters.getRawParameterValue ("keepBassOctaves");
     keepMelodyOctavesParam = parameters.getRawParameterValue ("keepMelodyOctaves");
     decisionLogParam      = parameters.getRawParameterValue ("decisionLog");
+    handVoicesParam       = parameters.getRawParameterValue ("handVoices");
     wMelodyBassParam      = parameters.getRawParameterValue ("wMelodyBass");
     wVelocityParam        = parameters.getRawParameterValue ("wVelocity");
     wDoubleParam          = parameters.getRawParameterValue ("wDouble");
@@ -121,6 +122,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "outChannelBase", 1 }, "Out Channel Base (voices +0..+3)", 1, 13, 1));
+
+    params.push_back (std::make_unique<juce::AudioParameterChoice>(
+        juce::ParameterID { "handVoices", 1 }, "Voices per Hand",
+        juce::StringArray { "1 (clean 2-staff)", "2 (lead + accompaniment)" }, 0));
 
     // Advanced - importance weights.
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
@@ -252,6 +257,7 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
     const int    perHand   = maxNotesPerHandParam != nullptr ? juce::roundToInt (maxNotesPerHandParam->load()) : 4;
     const int    maxSpan   = maxSpanParam         != nullptr ? juce::roundToInt (maxSpanParam->load()) : 14;
     const int    chanBase  = outChannelBaseParam  != nullptr ? juce::roundToInt (outChannelBaseParam->load()) : 1;
+    const int    handVoices = handVoicesParam     != nullptr ? juce::roundToInt (handVoicesParam->load()) + 1 : 1;
     const bool   damp      = dampSuccessiveParam  != nullptr && dampSuccessiveParam->load() >= 0.5f;
     const bool   doLog     = decisionLogParam     != nullptr && decisionLogParam->load() >= 0.5f;
     const float  ceiling   = (repair || difficultyCeilingParam == nullptr) ? 0.0f : difficultyCeilingParam->load();
@@ -321,10 +327,13 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
             if (doLog) logDrop (groupPpq, d);
         }
 
-        // Four Dorico voices: RH up-stem = highest kept (chanBase+0), RH
-        // down-stem the rest (chanBase+1); LH down-stem = lowest kept
-        // (chanBase+3), LH up-stem the rest (chanBase+2). Real per-line voice
-        // streaming is Phase 5.
+        // Voice-to-channel. `handVoices` = 1: one voice per hand - RH -> chanBase,
+        // LH -> chanBase+3 - a clean two-staff grand staff, right for homophonic
+        // piano writing (a chord is one voice, not a melody note isolated with
+        // rests around it). `handVoices` = 2: split the lead off - RH up-stem =
+        // highest kept (chanBase), rest chanBase+1; LH down-stem = lowest kept
+        // (chanBase+3), rest chanBase+2. Real per-line streaming is Phase 5.
+        const bool splitHand = handVoices == 2;
         const int rhTop  = keep.empty() ? -1 : keep.back();
         const int lhBot  = keep.empty() ? -1 : keep.front();
 
@@ -334,8 +343,8 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
             const int pitch = sub[static_cast<size_t> (idx)];
             const auto& src = byPitch[pitch];
             const int outCh = juce::jlimit (1, 16, hand == 2
-                ? (idx == rhTop ? chanBase     : chanBase + 1)
-                : (idx == lhBot ? chanBase + 3 : chanBase + 2));
+                ? ((splitHand && idx != rhTop) ? chanBase + 1 : chanBase)
+                : ((splitHand && idx != lhBot) ? chanBase + 2 : chanBase + 3));
 
             output.addEvent (juce::MidiMessage::noteOn (outCh, pitch, static_cast<juce::uint8> (subVel[static_cast<size_t> (idx)])), sample);
             activeNotes.push_back ({ src.channel, pitch, pitch, outCh });
