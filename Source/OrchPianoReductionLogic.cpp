@@ -510,7 +510,9 @@ namespace ocpn
         const int top    = out.back();
 
         // Fold each inner note up by octaves until it no longer forms a muddy
-        // interval with the bottom, without crossing the top.
+        // interval with the bottom, without crossing the top. Output stays
+        // index-for-index with the input - the caller pairs them - so it is NOT
+        // re-sorted; the outer frame (indices 0 and k-1) is never touched.
         for (int i = 1; i < k - 1; ++i)
         {
             int n = out[static_cast<size_t> (i)];
@@ -520,9 +522,6 @@ namespace ocpn
             out[static_cast<size_t> (i)] = n;
         }
 
-        std::sort (out.begin(), out.end());
-        out.front() = bottom;   // outer frame stays exact even if a fold reordered
-        out.back()  = top;
         return out;
     }
 
@@ -536,8 +535,9 @@ namespace ocpn
         const int top    = sortedNotes.back();
 
         // Outer frame exact; each inner note re-placed in close position stacked
-        // downward from just below the top, kept out of the bass mud. Same
-        // count - the caller drops any output pitch that duplicates another.
+        // downward from just below the top, keeping its own pitch class, kept out
+        // of the bass mud. Output stays index-for-index with the input (the
+        // caller pairs them and drops any duplicate pitch) - NOT re-sorted.
         std::vector<int> out (static_cast<size_t> (k), 0);
         out.front() = bottom;
         out.back()  = top;
@@ -559,7 +559,6 @@ namespace ocpn
                 ceiling = top - 1;      // out of room - wrap back up (collisions get dropped)
         }
 
-        std::sort (out.begin() + 1, out.end() - 1);
         return out;
     }
 

@@ -479,7 +479,10 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                                                double lookaheadPpq, double ppqPerSample,
                                                int numSamples, int onsetWindowSamples, bool drainAll)
 {
-    const double onsetWindowPpq = onsetWindowSamples * ppqPerSample;
+    // Cap the onset window well below any real gap between distinct chords, so a
+    // bad tempo reading on an edge block can't fuse a whole passage into one
+    // "chord".
+    const double onsetWindowPpq = juce::jlimit (0.01, 0.25, onsetWindowSamples * ppqPerSample);
     const double delay = drainAll ? 0.0 : lookaheadPpq;
     const double cutoff = drainAll ? 1.0e18 : (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
 
@@ -504,7 +507,8 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             size_t n = 0;
             while (n < planBuf.size()
                    && planBuf[n].msg.isNoteOn()
-                   && planBuf[n].ppq - gp <= onsetWindowPpq)
+                   && planBuf[n].ppq - gp <= onsetWindowPpq
+                   && group.size() < 24)               // no real piano onset is bigger
             {
                 const auto& m = planBuf[n].msg;
                 group.push_back ({ m.getChannel(), m.getNoteNumber(), m.getVelocity(), 0 });
