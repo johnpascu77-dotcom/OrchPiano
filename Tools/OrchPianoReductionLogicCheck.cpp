@@ -238,6 +238,40 @@ int main()
         check (dcKeep.size() < big.size(), "difficulty ceiling 0.3 forces the hand thinner");
     }
 
+    // --- Phase 4: re-voicing + dynamics ---------------------------
+    {
+        // revoiceFramework: a muddy inner interval folds up an octave; the
+        // outer frame is untouched.
+        std::vector<int> chord { 36, 40, 60 }; // C2 E2 C4 - E2 is a muddy M3 over C2
+        auto fw = revoiceFramework (chord, LilStrictness::Strict);
+        check (fw.front() == 36 && fw.back() == 60, "revoiceFramework keeps the outer frame exact");
+        check (fw[1] > 40, "revoiceFramework lifts the muddy inner E2 up an octave");
+        check (! intervalIsMuddy (fw.front(), fw[1], LilStrictness::Strict),
+               "revoiceFramework result is no longer muddy at the bottom");
+
+        // Off strictness -> unchanged.
+        check (revoiceFramework (chord, LilStrictness::Off) == chord,
+               "revoiceFramework is a no-op when strictness is Off");
+
+        // Fewer than 3 notes -> unchanged.
+        check (revoiceFramework ({ 40, 47 }, LilStrictness::Strict) == std::vector<int> { 40, 47 },
+               "revoiceFramework needs at least 3 notes");
+
+        // revoiceClose: outer frame exact, inners pulled up toward the top.
+        std::vector<int> spread { 36, 48, 55, 84 }; // wide open voicing
+        auto cl = revoiceClose (spread, LilStrictness::Loose);
+        check (cl.front() == 36 && cl.back() == 84, "revoiceClose keeps the outer frame exact");
+        check (cl[1] > 48 && cl[2] > 55, "revoiceClose pulls the inner voices up toward the top");
+        check (cl.size() == spread.size(), "revoiceClose returns the same count (caller dedupes)");
+
+        // dynamicRecoveryScale
+        check (dynamicRecoveryScale (200, 200) == 1.0, "no drop -> scale 1.0");
+        check (dynamicRecoveryScale (100, 400) > 1.0 && dynamicRecoveryScale (100, 400) <= 1.6,
+               "half the energy dropped -> boost, capped at 1.6");
+        check (dynamicRecoveryScale (0, 100) == 1.0, "guard: no kept energy -> 1.0");
+        check (dynamicRecoveryScale (300, 200) == 1.0, "never scale below 1.0");
+    }
+
     std::cout << "---------------------------\n";
     if (failures == 0)
     {

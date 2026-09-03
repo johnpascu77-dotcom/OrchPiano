@@ -496,4 +496,78 @@ namespace ocpn
 
         return kept;
     }
+
+    // ---- Phase 4: re-voicing + dynamics ------------------------------
+
+    std::vector<int> revoiceFramework (const std::vector<int>& sortedNotes, LilStrictness strictness)
+    {
+        std::vector<int> out = sortedNotes;
+        const int k = static_cast<int> (out.size());
+        if (k < 3 || strictness == LilStrictness::Off)
+            return out;
+
+        const int bottom = out.front();
+        const int top    = out.back();
+
+        // Fold each inner note up by octaves until it no longer forms a muddy
+        // interval with the bottom, without crossing the top.
+        for (int i = 1; i < k - 1; ++i)
+        {
+            int n = out[static_cast<size_t> (i)];
+            int guard = 0;
+            while (intervalIsMuddy (bottom, n, strictness) && n + 12 < top && guard++ < 8)
+                n += 12;
+            out[static_cast<size_t> (i)] = n;
+        }
+
+        std::sort (out.begin(), out.end());
+        out.front() = bottom;   // outer frame stays exact even if a fold reordered
+        out.back()  = top;
+        return out;
+    }
+
+    std::vector<int> revoiceClose (const std::vector<int>& sortedNotes, LilStrictness strictness)
+    {
+        const int k = static_cast<int> (sortedNotes.size());
+        if (k < 3)
+            return sortedNotes;
+
+        const int bottom = sortedNotes.front();
+        const int top    = sortedNotes.back();
+
+        // Outer frame exact; each inner note re-placed in close position stacked
+        // downward from just below the top, kept out of the bass mud. Same
+        // count - the caller drops any output pitch that duplicates another.
+        std::vector<int> out (static_cast<size_t> (k), 0);
+        out.front() = bottom;
+        out.back()  = top;
+
+        int ceiling = top - 1;
+        for (int i = 1; i < k - 1; ++i)
+        {
+            const int pc = mod12 (sortedNotes[static_cast<size_t> (i)]);
+            int n = ceiling - mod12 (ceiling - pc);   // highest note <= ceiling with this pc
+            if (n <= bottom)
+                n += 12;
+            int guard = 0;
+            while (intervalIsMuddy (bottom, n, strictness) && n + 12 < top && guard++ < 8)
+                n += 12;
+            n = std::clamp (n, bottom + 1, top - 1);
+            out[static_cast<size_t> (i)] = n;
+            ceiling = n - 1;
+            if (ceiling <= bottom)
+                ceiling = top - 1;      // out of room - wrap back up (collisions get dropped)
+        }
+
+        std::sort (out.begin() + 1, out.end() - 1);
+        return out;
+    }
+
+    double dynamicRecoveryScale (int sumKeptVelocity, int sumOriginalVelocity) noexcept
+    {
+        if (sumKeptVelocity <= 0 || sumOriginalVelocity <= sumKeptVelocity)
+            return 1.0;
+        const double ratio = static_cast<double> (sumOriginalVelocity) / sumKeptVelocity;
+        return std::clamp (std::sqrt (ratio), 1.0, 1.6);
+    }
 }

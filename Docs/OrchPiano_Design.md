@@ -96,8 +96,8 @@ Each phase ends green on the check tool and (from Phase 2) loadable in Bitwig.
 | **1 — mechanical core** ✅ `0dec153` | `ocpn::` LIL table + `intervalIsMuddy`; `octaveFoldInto`; `selectVoices` (ported from `ohrp::`); `assignHands` (split + `crossoverSlack` hysteresis). | — | 37 assertions |
 | **2 — plugin skeleton** ✅ `0dec153` (Bitwig-confirmed 2026-09-03) | Processor + Editor load as VST3, streaming onset-group hand-split reducer, 2 output channels, `dampSuccessive`, transport-edge safety. | streaming | — |
 | **3 — roles + importance drop** ✅ `0d89a5c` | `ocpn::melodyIndex`/`bassIndex`/`tagRoles`/`importanceScores`/`handDifficulty`/`reduceHand`; drop doublings → over-budget → over-span → over-ceiling, melody/bass never dropped; `difficultyCeiling`, `keepBass/MelodyOctaves`, `w*` weight params; **4-voice output** (RH up/down, LH up/down on `outChannelBase..+3`); **decision-log sidecar** (`%TEMP%/orchpiano-decisions-<tag>.log`, off-thread `LogWriter`). Repair mode: no poly cap. | streaming | +15 assertions (52 total) |
-| **4 — re-voicing + idiom** | `ocpn::revoiceClose` (§8.2) + `revoice` 3-state; `octaveMovePassages`; figuration substitution (`repeatedNoteTremolo`, `arpeggioRespace`, `stringResustain`); ornament recognition; dynamic-contour reconstruction. | streaming | close-position rules, LIL-driven re-stack, tremolo/arp spelling |
-| **5 — planning engine** | lookahead ring buffer; the §1.1 pipeline (part-track → classify → harmonic rhythm → phrase seg → per-phrase hand split via KDE → drop/re-voice → voice-lead cleanup); latency-compensation report; `inputSource` (Direct / OrchCapture merged) + coordinator IPC subscription. **OrchCapture-side changes** (merged-tap emit, time-offset compensation, feedback guard) land here in parallel. | planning | KDE split point, part-tracking cost, phrase segmentation, plan determinism |
+| **4 — re-voicing + dynamics** ✅ `<p4>` | `ocpn::revoiceFramework` (fold muddy inner notes up an 8ve) + `revoiceClose` (§8.2 close-position re-stack) + `revoice` 3-state; `intervalIsMuddy` wired in via `lowIntervalStrictness`; `dynamicRecoveryScale` + `dynamicContour` (thinned chord keeps its energy). Per hand, on ≥3-note groups. | streaming | revoice frame/close, LIL fixing, dynamic recovery |
+| **5 — planning engine** | lookahead ring buffer; the §1.1 pipeline (part-track → classify → harmonic rhythm → phrase seg → **per-phrase hand split via KDE** → drop/re-voice → voice-lead cleanup); **real per-line voice streaming** (3rd/4th Dorico voice only where counterpoint needs it); latency-compensation report; `inputSource` (Direct / OrchCapture merged) + coordinator IPC subscription. **Absorbs the context-dependent P4 items:** figuration substitution (`repeatedNoteTremolo`, `arpeggioRespace`, `stringResustain`), `octaveMovePassages`, ornament recognition, `melodyChannels`/`bassChannels` source hints — all need the window. **OrchCapture-side changes** (merged-tap emit, time-offset compensation, feedback guard) land here in parallel. | planning | KDE split, part-tracking cost, phrase segmentation, plan determinism |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |
 
 Transform-mode (rig) features (Center/Span travel, contour, field-CC read) port from OrchHarp
@@ -180,6 +180,18 @@ start.)*
   bass as a cheap proxy (slightly over-rewards seconds).
 - **P3:** decision-log sidecar is a plain `.log` (distinct name/format from OrchHarp's `bar:label`
   marker sidecar) so OrchCapture does **not** ingest it as markers — it is for the user to read.
+- **P3 (post-test):** `handVoices` param added, default **1 (one voice per hand)** — the first
+  Dorico test (Brahms Op.1/iv) showed the always-on 2-voice-per-hand split peppering the upper
+  voice with rests. `07652a0` also fixed a block-end onset-group flush emitting at the buffer edge.
+- **P4:** `revoice` / dynamic contour run **per hand** on the notes the hand kept, and treat any
+  ≥3-note group as a chord. The real homophonic-vs-contrapuntal classification (and applying
+  Close to the whole RH as one block) needs the lookahead window → P5.
+- **P4:** `revoiceClose` returns the same note count with possible duplicate pitches (two inner
+  PCs landing on one slot); the processor drops the duplicate and consumes its note-off.
+- **P4:** `dynamicContour` has only Off/Preserve — "Preserve+Mark" (hairpin markers to the
+  sidecar) deferred to P6.
+- **P4:** figuration substitution, `octaveMovePassages`, ornament recognition **moved to P5**
+  (all need cross-group context). `maxRingBeats` re-strike likewise — P5.
 
 ---
 

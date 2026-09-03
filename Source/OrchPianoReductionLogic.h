@@ -175,4 +175,32 @@ namespace ocpn
                                  const std::vector<double>& importance,
                                  const ReduceConfig& config,
                                  std::vector<DropRecord>& dropped);
+
+    // ---- Phase 4: re-voicing + dynamics --------------------------------
+    //
+    // Applied per hand to the notes reduceHand kept. The streaming engine treats
+    // any group of >= 3 simultaneous notes as a chord; the homophonic-vs-
+    // contrapuntal classification proper (and figuration substitution, whole-
+    // passage octave moves, ornament recognition) needs the lookahead window and
+    // is Phase 5.
+
+    enum class Revoice { Off = 0, Framework, Close };
+
+    // Framework: keep the outer notes (lowest + highest) exactly; where an inner
+    // note forms a muddy interval below its low-interval limit, fold that inner
+    // note up an octave until the stack is clean (or no octave helps). Same
+    // count, same outer notes. `sortedNotes` ascending.
+    std::vector<int> revoiceFramework (const std::vector<int>& sortedNotes, LilStrictness strictness);
+
+    // Close: outer frame exact; the inner pitch classes re-stacked in close
+    // position in the octave below the top note (one instance per pitch class),
+    // then LIL-checked against the bass. Returns adjusted pitches, ascending;
+    // the count can shrink if two inner pitch classes land on one note.
+    std::vector<int> revoiceClose (const std::vector<int>& sortedNotes, LilStrictness strictness);
+
+    // Velocity scale so a thinned chord keeps its perceived energy: from the
+    // summed velocities of the kept notes vs the whole original onset group.
+    // >= 1.0 (never quieter), capped so a heavy drop can't blow up. Loudness
+    // tracks ~sqrt(energy).
+    double dynamicRecoveryScale (int sumKeptVelocity, int sumOriginalVelocity) noexcept;
 }

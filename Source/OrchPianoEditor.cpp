@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 3 (roles + importance drop, 4 voices, decision log)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 4 (re-voice + low-interval limits + dynamic contour)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
@@ -26,6 +26,9 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addSliderRow ("maxSpan", "Max Hand Span (st)", 8, 16);
     addSliderRow ("crossoverSlack", "Crossover Slack (st)", 0, 12);
     addSliderRow ("difficultyCeiling", "Difficulty Ceiling (0=off)", 0.0, 1.0);
+    addChoiceRow ("revoice", "Re-voice", { "Off", "Framework", "Close" });
+    addChoiceRow ("lowIntervalStrictness", "Low-Interval Strictness", { "Off", "Loose", "Strict" });
+    addChoiceRow ("dynamicContour", "Dynamic Contour", { "Off", "Preserve" });
     addChoiceRow ("keepBassOctaves", "Keep Bass Octaves", { "Off", "Keep", "Add" });
     addToggleRow ("keepMelodyOctaves", "Keep Melody Octaves");
     addToggleRow ("dampSuccessive", "Damp On Next Attack");

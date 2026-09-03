@@ -80,6 +80,9 @@ private:
     std::atomic<float>* keepMelodyOctavesParam = nullptr;
     std::atomic<float>* decisionLogParam      = nullptr;
     std::atomic<float>* handVoicesParam       = nullptr;
+    std::atomic<float>* revoiceParam          = nullptr;
+    std::atomic<float>* lowIntervalStrictnessParam = nullptr;
+    std::atomic<float>* dynamicContourParam   = nullptr;
     std::atomic<float>* wMelodyBassParam      = nullptr;
     std::atomic<float>* wVelocityParam        = nullptr;
     std::atomic<float>* wDoubleParam          = nullptr;
