@@ -45,6 +45,7 @@ OrchPianoAudioProcessor::OrchPianoAudioProcessor()
     dampSuccessiveParam   = parameters.getRawParameterValue ("dampSuccessive");
     onsetWindowMsParam    = parameters.getRawParameterValue ("onsetWindowMs");
     outChannelBaseParam   = parameters.getRawParameterValue ("outChannelBase");
+    lookaheadBeatsParam   = parameters.getRawParameterValue ("lookaheadBeats");
     difficultyCeilingParam = parameters.getRawParameterValue ("difficultyCeiling");
     keepBassOctavesParam  = parameters.getRawParameterValue ("keepBassOctaves");
     keepMelodyOctavesParam = parameters.getRawParameterValue ("keepMelodyOctaves");
@@ -124,6 +125,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
         juce::ParameterID { "onsetWindowMs", 1 }, "Onset Window (ms)", 5, 200, 90));
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID { "lookaheadBeats", 1 }, "Lookahead (beats, 0 = live)", 0, 16, 8));
+
+    params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "outChannelBase", 1 }, "Out Channel Base (voices +0..+3)", 1, 13, 1));
 
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
@@ -169,6 +173,7 @@ void OrchPianoAudioProcessor::resetNoteMap()
 {
     activeNotes.clear();
     currentGroup.clear();
+    planBuf.clear();
     prevGroupNotes.clear();
     prevGroupHands.clear();
     prevKeptNotes.clear();
@@ -251,10 +256,23 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
 
     const int sample = juce::jmax (0, flushSample);
     const double groupPpq = juce::jmax (0.0, blockStartPpq + flushSample * ppqPerSample);
+    reduceGroup (currentGroup, {}, sample, groupPpq, output);
+    currentGroup.clear();
+}
+
+void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
+                                           const std::vector<int>& windowPitches,
+                                           int emitSample, double groupPpq,
+                                           juce::MidiBuffer& output)
+{
+    if (group.empty())
+        return;
+
+    const int sample = juce::jmax (0, emitSample);
 
     // Unique pitches, ascending; keep the loudest onset per pitch.
     std::map<int, HeldOn> byPitch;
-    for (const auto& h : currentGroup)
+    for (const auto& h : group)
     {
         auto e = byPitch.find (h.note);
         if (e == byPitch.end() || h.velocity > e->second.velocity)
@@ -268,7 +286,12 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
     const int    mode      = operatingModeParam   != nullptr ? juce::roundToInt (operatingModeParam->load()) : 1;
     const bool   repair    = mode == 0;
     const int    handsMode = handsParam           != nullptr ? juce::roundToInt (handsParam->load()) : 0;
-    const int    splitNote = splitNoteParam       != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
+    const int    priorSplit = splitNoteParam      != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
+    const int    splitNote = windowPitches.empty()
+        ? priorSplit
+        : ocpn::kdeHandSplit (windowPitches, priorSplit, 9);
+    if (! windowPitches.empty())
+        adaptiveSplit.store (splitNote);
     const int    slack     = crossoverSlackParam  != nullptr ? juce::roundToInt (crossoverSlackParam->load()) : 5;
     const int    perHand   = maxNotesPerHandParam != nullptr ? juce::roundToInt (maxNotesPerHandParam->load()) : 4;
     const int    maxSpan   = maxSpanParam         != nullptr ? juce::roundToInt (maxSpanParam->load()) : 14;
@@ -448,7 +471,70 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
     lastBass.store (bassOut);
     lastDropped.store (droppedCount);
 
-    currentGroup.clear();
+}
+
+// ---- Phase 5: drain the lookahead buffer -------------------------------
+
+void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double blockStartPpq,
+                                               double lookaheadPpq, double ppqPerSample,
+                                               int numSamples, int onsetWindowSamples, bool drainAll)
+{
+    const double onsetWindowPpq = onsetWindowSamples * ppqPerSample;
+    const double delay = drainAll ? 0.0 : lookaheadPpq;
+    const double cutoff = drainAll ? 1.0e18 : (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
+
+    auto emitSampleFor = [&] (double ppq)
+    {
+        if (ppqPerSample <= 0.0)
+            return 0;
+        return juce::jlimit (0, juce::jmax (0, numSamples - 1),
+                             juce::roundToInt ((ppq + delay - blockStartPpq) / ppqPerSample));
+    };
+
+    while (! planBuf.empty() && planBuf.front().ppq <= cutoff)
+    {
+        const auto& front = planBuf.front();
+
+        if (front.msg.isNoteOn())
+        {
+            const double gp = front.ppq;
+
+            // Onset group: the leading run of note-ons within one onset window.
+            std::vector<HeldOn> group;
+            size_t n = 0;
+            while (n < planBuf.size()
+                   && planBuf[n].msg.isNoteOn()
+                   && planBuf[n].ppq - gp <= onsetWindowPpq)
+            {
+                const auto& m = planBuf[n].msg;
+                group.push_back ({ m.getChannel(), m.getNoteNumber(), m.getVelocity(), 0 });
+                ++n;
+            }
+
+            // Lookahead window: every note-on still buffered within `lookaheadPpq`.
+            std::vector<int> windowPitches;
+            for (const auto& e : planBuf)
+            {
+                if (e.msg.isNoteOn() && e.ppq >= gp && e.ppq <= gp + lookaheadPpq)
+                    windowPitches.push_back (e.msg.getNoteNumber());
+            }
+
+            reduceGroup (group, windowPitches, emitSampleFor (gp), gp, output);
+            planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n));
+        }
+        else if (front.msg.isNoteOff())
+        {
+            handleNoteOff (front.msg, emitSampleFor (front.ppq), output);
+            planBuf.erase (planBuf.begin());
+        }
+        else
+        {
+            output.addEvent (front.msg, emitSampleFor (front.ppq));
+            planBuf.erase (planBuf.begin());
+        }
+    }
+
+    planBufCount.store (static_cast<int> (planBuf.size()));
 }
 
 // ---- processBlock -------------------------------------------------------
@@ -482,12 +568,27 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         * sampleRate / 1000.0));
 
     const bool transform = operatingModeParam != nullptr && juce::roundToInt (operatingModeParam->load()) == 2;
+    const int  lookaheadBeats = lookaheadBeatsParam != nullptr ? juce::roundToInt (lookaheadBeatsParam->load()) : 0;
+    const double lookaheadPpq = juce::jmax (0, lookaheadBeats); // 1 beat == 1 quarter-note == 1 ppq unit
+    const bool planning = lookaheadPpq > 0.0 && ! transform;
+
+    // Report the lookahead as plugin latency so the host can compensate.
+    if (ppqPerSample > 0.0)
+    {
+        const int lat = planning ? juce::roundToInt (lookaheadPpq / ppqPerSample) : 0;
+        if (lat != lastReportedLatency)
+        {
+            lastReportedLatency = lat;
+            setLatencySamples (lat);
+        }
+    }
 
     juce::MidiBuffer output;
 
     if (! playing && wasPlaying)
     {
         flushGroup (output, 0, blockStartPpq, ppqPerSample);
+        flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples, true);
         dampAllRinging (output, 0);
         activeNotes.clear();
         prevGroupNotes.clear();
@@ -501,10 +602,22 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         prevGroupNotes.clear();
         prevGroupHands.clear();
         prevKeptNotes.clear();
+        planBuf.clear();
         beatsPerBar = hostBeatsPerBar > 0.0 ? hostBeatsPerBar : 4.0;
         const juce::ScopedLock sl (decisionLock);
         decisionLines.clear();
     }
+    // Transport jumped backwards (loop / relocate) while playing: the buffer is
+    // stale - drop it and release anything ringing.
+    if (planning && playing && wasPlaying && blockStartPpq + 0.5 < lastBlockStartPpq && ! planBuf.empty())
+    {
+        planBuf.clear();
+        dampAllRinging (output, 0);
+        prevGroupNotes.clear();
+        prevGroupHands.clear();
+        prevKeptNotes.clear();
+    }
+    lastBlockStartPpq = blockStartPpq;
     wasPlaying = playing;
 
     if (transform)
@@ -515,6 +628,23 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         const auto message = metadata.getMessage();
         const int samplePosition = metadata.samplePosition;
 
+        if (message.isAllNotesOff() || message.isAllSoundOff())
+        {
+            currentGroup.clear();
+            planBuf.clear();
+            dampAllRinging (output, samplePosition);
+            activeNotes.clear();
+            output.addEvent (message, samplePosition);
+            continue;
+        }
+
+        if (planning)
+        {
+            planBuf.push_back ({ blockStartPpq + samplePosition * ppqPerSample, message });
+            continue;
+        }
+
+        // ---- streaming engine (lookahead 0) ----
         if (message.isNoteOn())
         {
             if (! currentGroup.empty()
@@ -537,24 +667,19 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             continue;
         }
 
-        if (message.isAllNotesOff() || message.isAllSoundOff())
-        {
-            currentGroup.clear();
-            dampAllRinging (output, samplePosition);
-            activeNotes.clear();
-            output.addEvent (message, samplePosition);
-            continue;
-        }
-
         output.addEvent (message, samplePosition); // CCs etc. pass through
     }
 
-    // Close the open group at the block end, emitting at the group's *own*
-    // onset sample - not the block boundary, which would shove the notes
-    // forward by up to a buffer's worth of time and make Dorico tuplet them.
-    if (! currentGroup.empty())
+    if (planning)
+    {
+        flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples, false);
+    }
+    else if (! currentGroup.empty())
+    {
+        // Close the open group at the block end, emitting at its own onset sample.
         flushGroup (output, juce::jlimit (0, juce::jmax (0, numSamples - 1), currentGroupStartSample),
                     blockStartPpq, ppqPerSample);
+    }
 
     midiMessages.swapWith (output);
 }

@@ -61,6 +61,8 @@ public:
     int getLastMelodyForUi()  const { return lastMelody.load(); }
     int getLastBassForUi()    const { return lastBass.load(); }
     int getLastDroppedForUi() const { return lastDropped.load(); }
+    int getAdaptiveSplitForUi() const { return adaptiveSplit.load(); }
+    int getPlanBufferForUi()  const { return planBufCount.load(); }
 
 private:
     juce::AudioProcessorValueTreeState parameters;
@@ -75,6 +77,7 @@ private:
     std::atomic<float>* dampSuccessiveParam   = nullptr;
     std::atomic<float>* onsetWindowMsParam    = nullptr;
     std::atomic<float>* outChannelBaseParam   = nullptr;
+    std::atomic<float>* lookaheadBeatsParam   = nullptr;
     std::atomic<float>* difficultyCeilingParam = nullptr;
     std::atomic<float>* keepBassOctavesParam  = nullptr;
     std::atomic<float>* keepMelodyOctavesParam = nullptr;
@@ -111,6 +114,18 @@ private:
     std::vector<int> prevGroupNotes, prevGroupHands; // crossover hysteresis
     std::vector<int> prevKeptNotes;                  // motion term
 
+    // ---- Phase 5: lookahead planning engine ----
+    // When lookaheadBeats > 0, every input event is buffered with its ppq and
+    // emitted a constant `lookaheadBeats` of musical time later; the reduction
+    // for each onset group then runs with the following ~2 bars visible (the
+    // KDE hand split, and - Phase 5b - part-tracking / figuration / phrase work).
+    struct PlanEvent { double ppq = 0.0; juce::MidiMessage msg; };
+    std::vector<PlanEvent> planBuf;   // sorted by ppq
+    double lastBlockStartPpq = -1.0e18;
+    int lastReportedLatency = 0;
+    std::atomic<int> adaptiveSplit { 60 };
+    std::atomic<int> planBufCount { 0 };
+
     double sampleRate = 44100.0;
     bool wasPlaying = false;
 
@@ -135,6 +150,10 @@ private:
 
     void resetNoteMap();
     void flushGroup (juce::MidiBuffer& output, int flushSample, double blockStartPpq, double ppqPerSample);
+    void reduceGroup (const std::vector<HeldOn>& group, const std::vector<int>& windowPitches,
+                      int emitSample, double groupPpq, juce::MidiBuffer& output);
+    void flushPlanBuffer (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
+                          double ppqPerSample, int numSamples, int onsetWindowSamples, bool drainAll);
     void dampAllRinging (juce::MidiBuffer& output, int sample);
     void handleNoteOff (const juce::MidiMessage& message, int sample, juce::MidiBuffer& output);
     void logEvent (double ppq, const juce::String& text);

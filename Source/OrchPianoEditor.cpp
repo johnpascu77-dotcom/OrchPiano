@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 4 (re-voice + low-interval limits + dynamic contour)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 5a (lookahead engine + adaptive hand split)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
@@ -25,6 +25,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addSliderRow ("maxNotesPerHand", "Notes / Hand (Reduce)", 2, 8);
     addSliderRow ("maxSpan", "Max Hand Span (st)", 8, 16);
     addSliderRow ("crossoverSlack", "Crossover Slack (st)", 0, 12);
+    addSliderRow ("lookaheadBeats", "Lookahead (beats, 0=live)", 0, 16);
     addSliderRow ("difficultyCeiling", "Difficulty Ceiling (0=off)", 0.0, 1.0);
     addChoiceRow ("revoice", "Re-voice", { "Off", "Framework", "Close" });
     addChoiceRow ("lowIntervalStrictness", "Low-Interval Strictness", { "Off", "Loose", "Strict" });
@@ -140,8 +141,12 @@ void OrchPianoAudioProcessorEditor::timerCallback()
                      : juce::MidiMessage::getMidiNoteName (n, true, true, 3);
     };
 
+    const int split = audioProcessor.getAdaptiveSplitForUi();
+    const int buf   = audioProcessor.getPlanBufferForUi();
+
     statusLabel.setText ("group " + juce::String (seen) + " in / " + juce::String (kept)
-                         + " kept / " + juce::String (dropped) + " dropped    melody "
-                         + noteName (mel) + "    bass " + noteName (bass),
+                         + " kept / " + juce::String (dropped) + " dropped   melody "
+                         + noteName (mel) + "  bass " + noteName (bass)
+                         + "   split " + noteName (split) + "  buf " + juce::String (buf),
                          juce::dontSendNotification);
 }

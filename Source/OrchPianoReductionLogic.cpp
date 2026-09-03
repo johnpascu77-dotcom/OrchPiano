@@ -570,4 +570,44 @@ namespace ocpn
         const double ratio = static_cast<double> (sumOriginalVelocity) / sumKeptVelocity;
         return std::clamp (std::sqrt (ratio), 1.0, 1.6);
     }
+
+    int kdeHandSplit (const std::vector<int>& windowPitches, int prior, int maxDriftSemis) noexcept
+    {
+        if (static_cast<int> (windowPitches.size()) < 4)
+            return prior;
+
+        // Smoothed pitch density (Gaussian kernel, sigma ~2 semitones).
+        std::array<double, 128> dens {};
+        for (int p : windowPitches)
+        {
+            if (p < 0 || p > 127)
+                continue;
+            for (int k = -5; k <= 5; ++k)
+            {
+                const int q = p + k;
+                if (q >= 0 && q < 128)
+                    dens[static_cast<size_t> (q)] += std::exp (-(k * k) / 8.0); // 2*sigma^2 = 8
+            }
+        }
+
+        const int drift = std::max (1, maxDriftSemis);
+        const int lo = std::clamp (prior - drift, 1, 126);
+        const int hi = std::clamp (prior + drift, 1, 126);
+        if (lo >= hi)
+            return prior;
+
+        int best = prior;
+        double bestD = dens[static_cast<size_t> (std::clamp (prior, 0, 127))];
+        for (int s = lo; s <= hi; ++s)
+        {
+            const double d = dens[static_cast<size_t> (s)];
+            if (d < bestD - 1e-9
+                || (std::abs (d - bestD) < 1e-9 && std::abs (s - prior) < std::abs (best - prior)))
+            {
+                bestD = d;
+                best = s;
+            }
+        }
+        return best;
+    }
 }

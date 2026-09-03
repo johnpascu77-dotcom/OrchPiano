@@ -272,6 +272,28 @@ int main()
         check (dynamicRecoveryScale (300, 200) == 1.0, "never scale below 1.0");
     }
 
+    // --- Phase 5a: adaptive hand split (KDE) ---------------------
+    {
+        // Too little data -> return the prior untouched.
+        checkInt (kdeHandSplit ({ 40, 80 }, 60), 60, "kdeHandSplit: <4 notes returns the prior");
+
+        // A clear two-cluster window (a bass around 48, a treble around 72,
+        // nothing near 60) -> the split lands in the empty zone near the prior.
+        std::vector<int> twoClusters { 45, 46, 48, 48, 50, 70, 72, 72, 74, 76 };
+        const int s = kdeHandSplit (twoClusters, 60);
+        check (s >= 55 && s <= 65, "kdeHandSplit: split falls in the gap between the two clusters");
+
+        // Constrained to +/- drift of the prior.
+        std::vector<int> allLow { 30, 32, 34, 34, 36, 38, 40 };
+        const int s2 = kdeHandSplit (allLow, 60, 9);
+        check (std::abs (s2 - 60) <= 9, "kdeHandSplit: never drifts more than maxDriftSemis from the prior");
+
+        // A window whose valley sits right at the prior keeps the prior.
+        std::vector<int> gapAt60 { 52, 53, 55, 56, 64, 65, 67, 68 };
+        const int s3 = kdeHandSplit (gapAt60, 60);
+        check (std::abs (s3 - 60) <= 3, "kdeHandSplit: a valley at the prior keeps the split near it");
+    }
+
     std::cout << "---------------------------\n";
     if (failures == 0)
     {

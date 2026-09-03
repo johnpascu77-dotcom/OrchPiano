@@ -203,4 +203,16 @@ namespace ocpn
     // >= 1.0 (never quieter), capped so a heavy drop can't blow up. Loudness
     // tracks ~sqrt(energy).
     double dynamicRecoveryScale (int sumKeptVelocity, int sumOriginalVelocity) noexcept;
+
+    // ---- Phase 5: adaptive hand split (planning engine) ----------------
+    //
+    // Where a fixed split point is wrong ~2 chords in 5 (ReductionRules §14.5),
+    // the planning engine picks the split per lookahead window from where the
+    // notes actually sit: build a smoothed pitch-density curve over the window
+    // and take its deepest valley - constrained to +/- `maxDriftSemis` of the
+    // `prior` split so a thin or ambiguous window can't swing it wildly. With
+    // fewer than 4 window notes, returns `prior` unchanged.
+    int kdeHandSplit (const std::vector<int>& windowPitches,
+                      int prior,
+                      int maxDriftSemis = 9) noexcept;
 }

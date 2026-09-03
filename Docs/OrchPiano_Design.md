@@ -97,7 +97,10 @@ Each phase ends green on the check tool and (from Phase 2) loadable in Bitwig.
 | **2 — plugin skeleton** ✅ `0dec153` (Bitwig-confirmed 2026-09-03) | Processor + Editor load as VST3, streaming onset-group hand-split reducer, 2 output channels, `dampSuccessive`, transport-edge safety. | streaming | — |
 | **3 — roles + importance drop** ✅ `0d89a5c` | `ocpn::melodyIndex`/`bassIndex`/`tagRoles`/`importanceScores`/`handDifficulty`/`reduceHand`; drop doublings → over-budget → over-span → over-ceiling, melody/bass never dropped; `difficultyCeiling`, `keepBass/MelodyOctaves`, `w*` weight params; **4-voice output** (RH up/down, LH up/down on `outChannelBase..+3`); **decision-log sidecar** (`%TEMP%/orchpiano-decisions-<tag>.log`, off-thread `LogWriter`). Repair mode: no poly cap. | streaming | +15 assertions (52 total) |
 | **4 — re-voicing + dynamics** ✅ `4bd749d` | `ocpn::revoiceFramework` (fold muddy inner notes up an 8ve) + `revoiceClose` (§8.2 close-position re-stack) + `revoice` 3-state; `intervalIsMuddy` wired in via `lowIntervalStrictness`; `dynamicRecoveryScale` + `dynamicContour` (thinned chord keeps its energy). Per hand, on ≥3-note groups. | streaming | revoice frame/close, LIL fixing, dynamic recovery |
-| **5 — planning engine** | lookahead ring buffer; the §1.1 pipeline (part-track → classify → harmonic rhythm → phrase seg → **per-phrase hand split via KDE** → drop/re-voice → voice-lead cleanup); **real per-line voice streaming** (3rd/4th Dorico voice only where counterpoint needs it); latency-compensation report; `inputSource` (Direct / OrchCapture merged) + coordinator IPC subscription. **Absorbs the context-dependent P4 items:** figuration substitution (`repeatedNoteTremolo`, `arpeggioRespace`, `stringResustain`), `octaveMovePassages`, ornament recognition, `melodyChannels`/`bassChannels` source hints — all need the window. **OrchCapture-side changes** (merged-tap emit, time-offset compensation, feedback guard) land here in parallel. | planning | KDE split, part-tracking cost, phrase segmentation, plan determinism |
+| **5a — lookahead engine + adaptive split** ✅ `<p5a>` | `lookaheadBeats` param (0 = streaming as before). `planBuf` (ppq-tagged event ring); every input event emitted a constant `lookaheadBeats` of musical time late via `flushPlanBuffer` (onset-group assembly from the buffer, `reduceGroup` shared with the streaming path, `emitSampleFor` maps ppq→sample). `setLatencySamples` reports the delay. Transport-stop drain (`drainAll`), backwards-jump (loop/relocate) buffer purge. `ocpn::kdeHandSplit` — smoothed pitch-density valley over the lookahead window, ±9 st of the `splitNote` prior → per-window adaptive hand split (the §14.5 fix). Editor status shows live split + buffer depth. | planning | +4 (kdeHandSplit) |
+| **5b — analysis passes** | phrase segmentation; **real per-line voice streaming** (3rd/4th Dorico voice only where counterpoint needs it); part-tracking cost; `w_rhythm`/`w_static` in the importance score (durations + window now available); per-phrase (not just per-window) hand split. | planning | part-track, phrase seg, plan determinism |
+| **5c — figuration + idiom (windowed)** | the context-dependent P4 carry-overs: `repeatedNoteTremolo`, `arpeggioRespace`, `stringResustain`, `maxRingBeats` re-strike, `octaveMovePassages`, ornament recognition. | planning | tremolo/arp/ornament spelling |
+| **5d — OrchCapture integration** | `inputSource` (Direct / OrchCapture merged) + coordinator IPC subscription; `melodyChannels`/`bassChannels` source hints. **OrchCapture-side:** coordinator live merged-tap emit, per-lane time-offset compensation, feedback guard. | planning | — |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |
 
 Transform-mode (rig) features (Center/Span travel, contour, field-CC read) port from OrchHarp
@@ -192,6 +195,13 @@ start.)*
   sidecar) deferred to P6.
 - **P4:** figuration substitution, `octaveMovePassages`, ornament recognition **moved to P5**
   (all need cross-group context). `maxRingBeats` re-strike likewise — P5.
+- **P5a:** on transport **stop** the buffered tail (~`lookaheadBeats` of music) is drained with
+  zero delay, so it lands compressed at the stop point — timing of the last ~2 bars is wrong but
+  nothing is lost / no stuck notes. Proper fix is the OrchCapture per-lane time-offset
+  compensation (P5d) — for now the take should run a couple of bars past the last note you care
+  about. `setLatencySamples` is reported but host MIDI-latency compensation varies.
+- **P5a:** adaptive split is **per lookahead window**, not per phrase (P5b), and clamped to ±9 st
+  of the `splitNote` param so `splitNote` is now a *prior*, not an absolute.
 
 ---
 
