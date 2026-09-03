@@ -164,16 +164,23 @@ the wrong line and "never dropped" protects the wrong thing.
 
 Over the lookahead window, score each line's "melodic-ness":
 
-- **+** longer notes than register-band neighbours
 - **+** stepwise / small-interval connection to the notes before and after it in its band
 - **+** rhythmic activity (a moving line, not a pad)
 - **+** registral extreme — highest, **or** an isolated low line well below the mass
 - **+** velocity accent relative to the texture
 - **+** melodic contour continuity across the phrase (planning engine only)
+- **±** note length — **context-dependent, weak** (see below)
 
 Highest-scoring line = melody. Bass = lowest **sustained, harmonically-functional** line (not a
 passing low note). This is the skyline algorithm plus refinements — the planning engine can afford
 the full version.
+
+> **Note length is not a reliable melody cue** (empirical — §14.5, Brahms Op. 1/iv: the top note
+> was also the longest in its onset group only **4 %** of the time). In a slow movement the melody
+> *is* often the longest line; in a fast movement the long notes are **held pedal tones under an
+> active top line** — the opposite. So weight length **positively only when the segment's note
+> rate is low** (a slow-movement heuristic), otherwise near-zero. Rhythmic activity + registral
+> top + contour continuity are the dependable cues.
 
 ### 4.3 Visible & overridable
 
@@ -487,7 +494,7 @@ Transform → **Full** default (also normalises spacing).
 | Constraint | Default | Max | Note |
 |---|---|---|---|
 | Hand span | 9th (14 st) | 10th (16 st) | matches OrchHarp `maxSpan 16` |
-| Notes per hand | 4 | 5 | 5 only with thumb; 4 is the safe default |
+| Notes per hand | **Reduce/Transform: 4** · **Repair: off (12)** | 5 (Reduce) | 5 only with thumb. **Repair must not cap** — real piano writing hits 5–9 notes/hand routinely (empirical §14.5: ~30 % of the Brahms is 5–9 poly) and it is already playable via spread/roll/pedal. The cap is for reducing *orchestral* density, not repairing a piano part. |
 | Independent voices per staff | 2 | 3 | 3 forces a merge unless `maxVoices 6` |
 | Over-span resolution | Roll | — | never drop the outer voices to fix a span |
 | L/R crossover | `crossoverSlack` ~5 st | — | brief dips don't reassign the hand |
@@ -544,6 +551,13 @@ reduction?" isn't a unit test. Two layers:
   reduce. Feed the orchestration to OrchPiano, diff the output against the original piano version.
   Supplement with published vocal-score reductions (functional, plain — not Liszt-style virtuoso
   transcriptions, the wrong target).
+- **Prefer MusicXML over MIDI for references.** MusicXML carries the engraver's actual
+  `<staff>` and `<voice>` tags — *ground truth* for hand assignment and voice streaming, which
+  MIDI cannot give (a MIDI rip like §14.5's Brahms is a single undifferentiated stream). Workflow:
+  run OrchPiano on the piece, compare its per-note hand/voice assignment to the reference XML's
+  staff/voice → a hard accuracy % per bar. Dorico exports MusicXML from both an orchestral score
+  and a reduction, so an **(orchestral MusicXML, reduction MusicXML) pair** is the ideal Reduce-path
+  test unit. PDF is not machine-usable without OMR — eyeball reference only.
 - **Metrics** (from the literature, §14.4):
   - *Objective:* **pitch-class-histogram similarity in a sliding 2-beat window** (0–1) between
     OrchPiano's output and the reference — the standard automatic metric, cheap, a good regression
@@ -596,6 +610,26 @@ reachable in sequence." **v2 refinement.**
 
 **Also:** study **Dorico's own Reduce** behaviour and **music21's** `chordify()` / voice tools to
 match the handoff.
+
+### 14.5 Empirical notes — test corpus
+
+Numbers measured from real files, to pin defaults and catch wrong assumptions.
+
+**Brahms, Piano Sonata No. 1 Op. 1 / iv** (`brahms_opus1_4_format0.mid`, piano-midi.de rip;
+Type-0, one channel; 5435 notes / 417 s; range MIDI 24–103):
+
+| Measure | Value | Design consequence |
+|---|---|---|
+| Simultaneous polyphony | mean 3.7, **5–9 notes ~30 % of the time**, max 9 | **Repair must not poly-cap** (§13) — this is playable piano writing, not orchestral density. |
+| Onset groups | 2044; 33 % single-note, **50 % have ≥ 3 notes** | plenty of both textures — the homophonic/contrapuntal detector (§3) is exercised hard. |
+| Natural hand-split point (biggest internal gap per chord) | median 59, q25 54, q75 66 — **but 39 % of chords split > 7 st from MIDI 60** | a **fixed** `splitNote` is wrong ~2 chords in 5 → this *is* the "OK not great" the user saw. The **per-phrase KDE split** (§12, planning engine) is the fix, and the data quantifies the payoff. |
+| Chords entirely above MIDI 67 | 121 | a fixed split at 60 dumps all of these on the right hand (5–8-note treble cluster, empty left). Adaptive split handles it. |
+| Top note is also the longest in its group | **4 %** | note length is a bad melody cue for a *fast* movement — the long notes are held pedal tones under the active top line. See §4.2. |
+| Track/channel structure | none (Type-0) | worst case for melody/bass ID; the real target (Dorico → MIDI export) carries staff/voice per track and is easier. |
+
+Verdict on MIDI rips as a corpus: fine for early **hand-split** and **melody-salience** tuning,
+not for the Reduce path (already-pianistic input) and harder than the real use case (no channels).
+For real validation use **MusicXML pairs** — see §14.3 and the format note there.
 
 ---
 
