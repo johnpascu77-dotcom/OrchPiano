@@ -137,6 +137,7 @@ private:
     void flushGroup (juce::MidiBuffer& output, int flushSample, double blockStartPpq, double ppqPerSample);
     void dampAllRinging (juce::MidiBuffer& output, int sample);
     void handleNoteOff (const juce::MidiMessage& message, int sample, juce::MidiBuffer& output);
+    void logEvent (double ppq, const juce::String& text);
     void logDrop (double ppq, const ocpn::DropRecord& d);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OrchPianoAudioProcessor)

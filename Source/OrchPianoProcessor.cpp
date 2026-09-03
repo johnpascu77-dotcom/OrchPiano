@@ -205,18 +205,19 @@ void OrchPianoAudioProcessor::handleNoteOff (const juce::MidiMessage& message, i
     }
 }
 
+void OrchPianoAudioProcessor::logEvent (double ppq, const juce::String& text)
+{
+    const double bar = beatsPerBar > 0.0 ? ppq / beatsPerBar + 1.0 : 1.0;
+    const juce::ScopedLock sl (decisionLock);
+    if (decisionLines.size() < 8192)
+        decisionLines.push_back ("bar " + juce::String (bar, 2) + "   " + text);
+}
+
 void OrchPianoAudioProcessor::logDrop (double ppq, const ocpn::DropRecord& d)
 {
     static const char* reason[] = { "doubling", "over voice budget", "over span", "over difficulty" };
-    const double bar = beatsPerBar > 0.0 ? ppq / beatsPerBar + 1.0 : 1.0;
-    juce::String line;
-    line << "bar " << juce::String (bar, 2) << "   drop "
-         << juce::MidiMessage::getMidiNoteName (d.note, true, true, 3)
-         << " (" << d.note << ")   " << reason[static_cast<int> (d.reason)];
-
-    const juce::ScopedLock sl (decisionLock);
-    if (decisionLines.size() < 8192)
-        decisionLines.push_back (line);
+    logEvent (ppq, "drop     " + juce::MidiMessage::getMidiNoteName (d.note, true, true, 3)
+                   + " (" + juce::String (d.note) + ")   " + reason[static_cast<int> (d.reason)]);
 }
 
 void OrchPianoAudioProcessor::writeDecisionFile()
@@ -231,7 +232,7 @@ void OrchPianoAudioProcessor::writeDecisionFile()
 
     juce::String body;
     body << "OrchPiano decision log - " << juce::Time::getCurrentTime().toString (true, true) << "\n";
-    body << lines.size() << " drops\n\n";
+    body << lines.size() << " events (drop / revoice / octave+ / dynamics)\n\n";
     for (const auto& l : lines)
         body << l << "\n";
 
@@ -360,6 +361,12 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
 
         const double velScale = dynContour ? ocpn::dynamicRecoveryScale (sumKeptVel, sumHandVel) : 1.0;
 
+        if (doLog && velScale > 1.08)
+            logEvent (groupPpq, "dynamics x" + juce::String (velScale, 2)
+                                + " (hand " + juce::String (hand == 2 ? "R" : "L") + ", thinned chord)");
+
+        auto nn = [] (int n) { return juce::MidiMessage::getMidiNoteName (n, true, true, 3); };
+
         // Voice-to-channel. `handVoices` = 1: one voice per hand (RH -> chanBase,
         // LH -> chanBase+3) - a clean two-staff grand staff. `handVoices` = 2:
         // split the lead off. Real per-line streaming is Phase 5.
@@ -382,9 +389,14 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
                 != emittedPitchesThisHand.end())
             {
                 activeNotes.push_back ({ src.channel, inPitch, -1, 0 });
+                if (doLog) logEvent (groupPpq, "revoice  " + nn (inPitch) + " folded onto " + nn (pitch));
                 continue;
             }
             emittedPitchesThisHand.push_back (pitch);
+
+            if (doLog && pitch != inPitch)
+                logEvent (groupPpq, "revoice  " + nn (inPitch) + " -> " + nn (pitch) + "   "
+                          + (revoice == 1 ? "framework: low-interval fix" : "close-position re-stack"));
 
             const int outCh = juce::jlimit (1, 16, hand == 2
                 ? ((splitHand && idx != rhTop) ? chanBase + 1 : chanBase)
@@ -421,6 +433,7 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
                     static_cast<juce::uint8> (subVel[static_cast<size_t> (keep.front())])), sample);
                 activeNotes.push_back ({ byPitch[bassPitch].channel, bassPitch, lower, lhDownCh });
                 ++emitted;
+                if (doLog) logEvent (groupPpq, "octave+  added " + nn (lower) + " under the bass");
             }
         }
     }
