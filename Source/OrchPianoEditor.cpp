@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 5a (lookahead engine + adaptive hand split)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 5a (lookahead engine; output is delayed, compensate downstream)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);

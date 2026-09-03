@@ -125,7 +125,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
         juce::ParameterID { "onsetWindowMs", 1 }, "Onset Window (ms)", 5, 200, 90));
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
-        juce::ParameterID { "lookaheadBeats", 1 }, "Lookahead (beats, 0 = live)", 0, 16, 8));
+        juce::ParameterID { "lookaheadBeats", 1 }, "Lookahead (beats, 0 = live)", 0, 16, 4));
 
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "outChannelBase", 1 }, "Out Channel Base (voices +0..+3)", 1, 13, 1));
@@ -572,16 +572,13 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     const double lookaheadPpq = juce::jmax (0, lookaheadBeats); // 1 beat == 1 quarter-note == 1 ppq unit
     const bool planning = lookaheadPpq > 0.0 && ! transform;
 
-    // Report the lookahead as plugin latency so the host can compensate.
-    if (ppqPerSample > 0.0)
-    {
-        const int lat = planning ? juce::roundToInt (lookaheadPpq / ppqPerSample) : 0;
-        if (lat != lastReportedLatency)
-        {
-            lastReportedLatency = lat;
-            setLatencySamples (lat);
-        }
-    }
+    // NOTE: the lookahead delay is deliberately NOT reported via
+    // setLatencySamples(). At a slow tempo `lookaheadBeats` is several seconds -
+    // past the host's latency-compensation ceiling (Bitwig caps at 2 s) - and
+    // re-reporting it as the tempo reading wobbles makes the transport jitter.
+    // OrchPiano is a non-real-time reduction tool: its constant delay is taken
+    // out downstream (OrchCapture per-lane time-offset compensation, Phase 5d, or
+    // the user nudges the captured clip back by `lookaheadBeats`).
 
     juce::MidiBuffer output;
 

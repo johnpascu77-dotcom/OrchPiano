@@ -199,7 +199,12 @@ start.)*
   zero delay, so it lands compressed at the stop point — timing of the last ~2 bars is wrong but
   nothing is lost / no stuck notes. Proper fix is the OrchCapture per-lane time-offset
   compensation (P5d) — for now the take should run a couple of bars past the last note you care
-  about. `setLatencySamples` is reported but host MIDI-latency compensation varies.
+  about.
+- **P5a (bugfix, post-test):** `setLatencySamples` was reporting the lookahead delay to the host →
+  Bitwig **"Latency Compensation Overflow"** (its ceiling is 2 s; `lookaheadBeats 8` @ 121 BPM ≈
+  4 s) + a jittery transport (re-reported every block as the tempo reading wobbled). **Removed** —
+  OrchPiano's delay is absorbed downstream (P5d / manual clip nudge), never by the host. Default
+  `lookaheadBeats` lowered 8 → **4** (1 bar) to halve the delay the user must compensate.
 - **P5a:** adaptive split is **per lookahead window**, not per phrase (P5b), and clamped to ±9 st
   of the `splitNote` param so `splitNote` is now a *prior*, not an absolute.
 

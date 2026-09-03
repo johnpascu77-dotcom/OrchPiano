@@ -122,7 +122,6 @@ private:
     struct PlanEvent { double ppq = 0.0; juce::MidiMessage msg; };
     std::vector<PlanEvent> planBuf;   // sorted by ppq
     double lastBlockStartPpq = -1.0e18;
-    int lastReportedLatency = 0;
     std::atomic<int> adaptiveSplit { 60 };
     std::atomic<int> planBufCount { 0 };
 
