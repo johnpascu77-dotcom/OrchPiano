@@ -107,6 +107,7 @@ private:
         int note = 0;
         juce::uint8 velocity = 100;
         int samplePos = 0;
+        int durTicks = 0;   // planning engine fills this (ppq*100); 0 = unknown
     };
     std::vector<HeldOn> currentGroup;
     int currentGroupStartSample = 0;
@@ -122,6 +123,8 @@ private:
     struct PlanEvent { double ppq = 0.0; juce::MidiMessage msg; };
     std::vector<PlanEvent> planBuf;   // sorted by ppq
     double lastBlockStartPpq = -1.0e18;
+    int planPhraseSplit = -1;         // hand split held stable across the current phrase
+    double planLastOnsetPpq = -1.0e18;
     std::atomic<int> adaptiveSplit { 60 };
     std::atomic<int> planBufCount { 0 };
 
@@ -149,10 +152,10 @@ private:
 
     void resetNoteMap();
     void flushGroup (juce::MidiBuffer& output, int flushSample, double blockStartPpq, double ppqPerSample);
-    void reduceGroup (const std::vector<HeldOn>& group, const std::vector<int>& windowPitches,
+    void reduceGroup (const std::vector<HeldOn>& group, int splitNote,
                       int emitSample, double groupPpq, juce::MidiBuffer& output);
     void flushPlanBuffer (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
-                          double ppqPerSample, int numSamples, int onsetWindowSamples, bool drainAll);
+                          double ppqPerSample, int numSamples, int onsetWindowSamples);
     void dampAllRinging (juce::MidiBuffer& output, int sample);
     void handleNoteOff (const juce::MidiMessage& message, int sample, juce::MidiBuffer& output);
     void logEvent (double ppq, const juce::String& text);

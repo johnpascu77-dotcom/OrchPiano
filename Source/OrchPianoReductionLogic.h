@@ -117,6 +117,8 @@ namespace ocpn
         float charTone     = 0.4f;   // 7ths / 9ths / tritone above the bass
         float motion       = 0.4f;   // stepwise continuation of a previous note
         float doublePenalty = 1.0f;
+        float rhythm       = 0.4f;   // an inner note shorter than the group median = an active line (planning engine)
+        float staticPad    = 0.4f;   // an inner note much longer than the median = pad fill (planning engine)
     };
 
     // Index into an ascending onset group that carries the melody. Registral top
@@ -136,12 +138,21 @@ namespace ocpn
                                 int melodyIdx, int bassIdx);
 
     // Per-note importance. `prevKept` = the pitches the engine emitted for the
-    // previous onset group (motion term); empty is fine.
+    // previous onset group (motion term); empty is fine. `durations` (parallel to
+    // `sortedNotes`, any consistent unit - only relative size matters) enables
+    // the rhythm / static-pad terms; empty (streaming engine) skips them.
     std::vector<double> importanceScores (const std::vector<int>& sortedNotes,
                                           const std::vector<int>& velocities,
                                           const std::vector<Role>& roles,
                                           const std::vector<int>& prevKept,
-                                          const ImportanceWeights& weights);
+                                          const ImportanceWeights& weights,
+                                          const std::vector<int>& durations = {});
+
+    // Phrase-boundary detection: given ascending onset positions (any unit),
+    // returns the indices at which a new phrase starts (index 0 always, plus any
+    // onset preceded by a gap >= `gapThreshold`). Used by the planning engine to
+    // hold the hand split + hysteresis stable within a phrase.
+    std::vector<int> phraseStarts (const std::vector<double>& onsets, double gapThreshold);
 
     // Estimate 0..1 how hard an n-note chord spanning `spanSemis` is for one
     // hand (streaming proxy: count + span; the planning engine adds a

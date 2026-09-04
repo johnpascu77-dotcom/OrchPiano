@@ -174,6 +174,8 @@ void OrchPianoAudioProcessor::resetNoteMap()
     activeNotes.clear();
     currentGroup.clear();
     planBuf.clear();
+    planPhraseSplit = -1;
+    planLastOnsetPpq = -1.0e18;
     prevGroupNotes.clear();
     prevGroupHands.clear();
     prevKeptNotes.clear();
@@ -256,12 +258,13 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
 
     const int sample = juce::jmax (0, flushSample);
     const double groupPpq = juce::jmax (0.0, blockStartPpq + flushSample * ppqPerSample);
-    reduceGroup (currentGroup, {}, sample, groupPpq, output);
+    const int priorSplit = splitNoteParam != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
+    reduceGroup (currentGroup, priorSplit, sample, groupPpq, output);
     currentGroup.clear();
 }
 
 void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
-                                           const std::vector<int>& windowPitches,
+                                           int splitNote,
                                            int emitSample, double groupPpq,
                                            juce::MidiBuffer& output)
 {
@@ -279,19 +282,19 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             byPitch[h.note] = h;
     }
 
-    std::vector<int> notes, vels;
+    std::vector<int> notes, vels, durs;
     notes.reserve (byPitch.size());
-    for (const auto& kv : byPitch) { notes.push_back (kv.first); vels.push_back (kv.second.velocity); }
+    for (const auto& kv : byPitch)
+    {
+        notes.push_back (kv.first);
+        vels.push_back (kv.second.velocity);
+        durs.push_back (kv.second.durTicks);
+    }
+    const bool haveDur = std::any_of (durs.begin(), durs.end(), [] (int d) { return d > 0; });
 
     const int    mode      = operatingModeParam   != nullptr ? juce::roundToInt (operatingModeParam->load()) : 1;
     const bool   repair    = mode == 0;
     const int    handsMode = handsParam           != nullptr ? juce::roundToInt (handsParam->load()) : 0;
-    const int    priorSplit = splitNoteParam      != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
-    const int    splitNote = windowPitches.empty()
-        ? priorSplit
-        : ocpn::kdeHandSplit (windowPitches, priorSplit, 9);
-    if (! windowPitches.empty())
-        adaptiveSplit.store (splitNote);
     const int    slack     = crossoverSlackParam  != nullptr ? juce::roundToInt (crossoverSlackParam->load()) : 5;
     const int    perHand   = maxNotesPerHandParam != nullptr ? juce::roundToInt (maxNotesPerHandParam->load()) : 4;
     const int    maxSpan   = maxSpanParam         != nullptr ? juce::roundToInt (maxSpanParam->load()) : 14;
@@ -317,7 +320,8 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
     const int melIdx  = ocpn::melodyIndex (notes, vels);
     const int bassIdx = ocpn::bassIndex (notes);
     const auto roles  = ocpn::tagRoles (notes, melIdx, bassIdx);
-    const auto imp    = ocpn::importanceScores (notes, vels, roles, prevKeptNotes, w);
+    const auto imp    = ocpn::importanceScores (notes, vels, roles, prevKeptNotes, w,
+                                                haveDur ? durs : std::vector<int> {});
 
     const auto handAssign = ocpn::assignHands (notes, splitNote, slack, prevGroupNotes, prevGroupHands);
 
@@ -477,21 +481,20 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
 
 void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double blockStartPpq,
                                                double lookaheadPpq, double ppqPerSample,
-                                               int numSamples, int onsetWindowSamples, bool drainAll)
+                                               int numSamples, int onsetWindowSamples)
 {
     // Cap the onset window well below any real gap between distinct chords, so a
     // bad tempo reading on an edge block can't fuse a whole passage into one
     // "chord".
     const double onsetWindowPpq = juce::jlimit (0.01, 0.25, onsetWindowSamples * ppqPerSample);
-    const double delay = drainAll ? 0.0 : lookaheadPpq;
-    const double cutoff = drainAll ? 1.0e18 : (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
+    const double cutoff = (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
 
     auto emitSampleFor = [&] (double ppq)
     {
         if (ppqPerSample <= 0.0)
             return 0;
         return juce::jlimit (0, juce::jmax (0, numSamples - 1),
-                             juce::roundToInt ((ppq + delay - blockStartPpq) / ppqPerSample));
+                             juce::roundToInt ((ppq + lookaheadPpq - blockStartPpq) / ppqPerSample));
     };
 
     while (! planBuf.empty() && planBuf.front().ppq <= cutoff)
@@ -502,6 +505,33 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
         {
             const double gp = front.ppq;
 
+            // Phrase boundary? A gap of >= 1 beat with no onset starts a new
+            // phrase - recompute the hand split from the phrase's pitches and
+            // hold it stable until the next boundary; also re-seed the crossover
+            // hysteresis / motion history.
+            constexpr double kPhraseGapBeats = 1.0;
+            if (planPhraseSplit < 0 || gp - planLastOnsetPpq >= kPhraseGapBeats)
+            {
+                std::vector<int> phrasePitches;
+                double prev = gp;
+                for (const auto& e : planBuf)
+                {
+                    if (! e.msg.isNoteOn() || e.ppq < gp)
+                        continue;
+                    if (e.ppq - prev >= kPhraseGapBeats && e.ppq > gp)
+                        break;                       // next phrase - stop
+                    phrasePitches.push_back (e.msg.getNoteNumber());
+                    prev = e.ppq;
+                }
+                const int priorSplit = splitNoteParam != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
+                planPhraseSplit = ocpn::kdeHandSplit (phrasePitches, priorSplit, 9);
+                adaptiveSplit.store (planPhraseSplit);
+                prevGroupNotes.clear();
+                prevGroupHands.clear();
+                prevKeptNotes.clear();
+            }
+            planLastOnsetPpq = gp;
+
             // Onset group: the leading run of note-ons within one onset window.
             std::vector<HeldOn> group;
             size_t n = 0;
@@ -511,19 +541,24 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                    && group.size() < 24)               // no real piano onset is bigger
             {
                 const auto& m = planBuf[n].msg;
-                group.push_back ({ m.getChannel(), m.getNoteNumber(), m.getVelocity(), 0 });
+                // Duration: scan forward for this note's matching note-off.
+                int durTicks = 0;
+                for (size_t j = n + 1; j < planBuf.size(); ++j)
+                {
+                    const auto& off = planBuf[j].msg;
+                    if ((off.isNoteOff() || (off.isNoteOn() && off.getVelocity() == 0))
+                        && off.getChannel() == m.getChannel()
+                        && off.getNoteNumber() == m.getNoteNumber())
+                    {
+                        durTicks = juce::jmax (1, juce::roundToInt ((planBuf[j].ppq - planBuf[n].ppq) * 100.0));
+                        break;
+                    }
+                }
+                group.push_back ({ m.getChannel(), m.getNoteNumber(), m.getVelocity(), 0, durTicks });
                 ++n;
             }
 
-            // Lookahead window: every note-on still buffered within `lookaheadPpq`.
-            std::vector<int> windowPitches;
-            for (const auto& e : planBuf)
-            {
-                if (e.msg.isNoteOn() && e.ppq >= gp && e.ppq <= gp + lookaheadPpq)
-                    windowPitches.push_back (e.msg.getNoteNumber());
-            }
-
-            reduceGroup (group, windowPitches, emitSampleFor (gp), gp, output);
+            reduceGroup (group, planPhraseSplit, emitSampleFor (gp), gp, output);
             planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n));
         }
         else if (front.msg.isNoteOff())
@@ -610,6 +645,8 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         prevGroupHands.clear();
         prevKeptNotes.clear();
         planBuf.clear();
+        planPhraseSplit = -1;
+        planLastOnsetPpq = -1.0e18;
         beatsPerBar = hostBeatsPerBar > 0.0 ? hostBeatsPerBar : 4.0;
         const juce::ScopedLock sl (decisionLock);
         decisionLines.clear();
@@ -619,6 +656,8 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     if (planning && playing && wasPlaying && blockStartPpq + 0.5 < lastBlockStartPpq && ! planBuf.empty())
     {
         planBuf.clear();
+        planPhraseSplit = -1;
+        planLastOnsetPpq = -1.0e18;
         dampAllRinging (output, 0);
         prevGroupNotes.clear();
         prevGroupHands.clear();
@@ -679,7 +718,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
     if (planning)
     {
-        flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples, false);
+        flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples);
     }
     else if (! currentGroup.empty())
     {

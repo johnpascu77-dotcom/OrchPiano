@@ -326,12 +326,22 @@ namespace ocpn
                                           const std::vector<int>& velocities,
                                           const std::vector<Role>& roles,
                                           const std::vector<int>& prevKept,
-                                          const ImportanceWeights& w)
+                                          const ImportanceWeights& w,
+                                          const std::vector<int>& durations)
     {
         const int k = static_cast<int> (sortedNotes.size());
         std::vector<double> out (static_cast<size_t> (std::max (0, k)), 0.0);
         if (k == 0)
             return out;
+
+        const bool haveDur = static_cast<int> (durations.size()) == k;
+        double medianDur = 0.0;
+        if (haveDur)
+        {
+            std::vector<int> d = durations;
+            std::sort (d.begin(), d.end());
+            medianDur = d[static_cast<size_t> (k / 2)];
+        }
 
         double meanVel = 0.0;
         for (int i = 0; i < k; ++i)
@@ -370,10 +380,30 @@ namespace ocpn
             if (roles[si] == Role::Doubling)
                 s -= w.doublePenalty;
 
+            // Rhythm / static-pad (planning engine only): an inner voice shorter
+            // than the group median is an active line; much longer is pad fill.
+            if (haveDur && roles[si] == Role::Inner && medianDur > 0.0)
+            {
+                const double rel = durations[si] / medianDur;
+                if (rel < 0.7)  s += w.rhythm    * (0.7 - rel) / 0.7;
+                if (rel > 1.5)  s -= w.staticPad * std::min (1.0, (rel - 1.5) / 1.5);
+            }
+
             out[si] = s;
         }
 
         return out;
+    }
+
+    std::vector<int> phraseStarts (const std::vector<double>& onsets, double gapThreshold)
+    {
+        std::vector<int> starts;
+        for (int i = 0; i < static_cast<int> (onsets.size()); ++i)
+        {
+            if (i == 0 || onsets[static_cast<size_t> (i)] - onsets[static_cast<size_t> (i - 1)] >= gapThreshold)
+                starts.push_back (i);
+        }
+        return starts;
     }
 
     double handDifficulty (int noteCount, int spanSemis) noexcept

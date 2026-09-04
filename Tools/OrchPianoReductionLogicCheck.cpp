@@ -272,6 +272,29 @@ int main()
         check (dynamicRecoveryScale (300, 200) == 1.0, "never scale below 1.0");
     }
 
+    // --- Phase 5b: rhythm / static-pad importance + phrase starts ---
+    {
+        std::vector<int> g { 40, 55, 60, 76 };            // bass, 2 inners, melody
+        std::vector<int> v (4, 80);
+        const auto roles = tagRoles (g, melodyIndex (g, v), bassIndex (g));
+
+        // Inner 55 short, inner 60 very long; the rest median-ish.
+        std::vector<int> dur { 100, 30, 400, 100 };
+        const auto with    = importanceScores (g, v, roles, {}, ImportanceWeights {}, dur);
+        const auto without = importanceScores (g, v, roles, {}, ImportanceWeights {});
+
+        check (with[1] > without[1], "a short inner voice scores higher with the rhythm term");
+        check (with[2] < without[2], "a very long inner voice (pad) scores lower with the static term");
+        check (with[3] == without[3], "the melody is unaffected by rhythm/static (it is not Inner)");
+        check (without == importanceScores (g, v, roles, {}, ImportanceWeights {}, {}),
+               "no durations -> rhythm/static terms are skipped");
+
+        // phraseStarts
+        std::vector<double> onsets { 0.0, 0.5, 1.0, 4.0, 4.5, 8.0 };
+        const auto ps = phraseStarts (onsets, 1.0);   // gap >= 1 beat starts a phrase
+        check (eq (ps, { 0, 3, 5 }), "phraseStarts: boundaries at index 0 and after each >=1-beat gap");
+    }
+
     // --- Phase 5a: adaptive hand split (KDE) ---------------------
     {
         // Too little data -> return the prior untouched.
