@@ -406,6 +406,74 @@ namespace ocpn
         return starts;
     }
 
+    std::vector<int> streamHandVoices (const std::vector<int>& handNotes,
+                                       const std::vector<int>& handDurations,
+                                       int line0LastPitch,
+                                       int line1LastPitch,
+                                       bool secondaryActive,
+                                       bool leadIsTop)
+    {
+        const int k = static_cast<int> (handNotes.size());
+        std::vector<int> v (static_cast<size_t> (std::max (0, k)), 0);
+        if (k == 0)
+            return v;
+
+        // Does this group need a second voice?
+        bool two = secondaryActive;
+        if (k >= 2)
+        {
+            int mn = handDurations.empty() ? 0 : handDurations[0];
+            int mx = mn;
+            for (int d : handDurations) { mn = std::min (mn, d); mx = std::max (mx, d); }
+            if (mn > 0 && mx >= 2 * mn)
+                two = true;                       // a held note under a shorter one
+        }
+
+        if (! two)
+            return v;                             // one voice, everything to line 0
+
+        const int leadIdx = leadIsTop ? k - 1 : 0;
+
+        if (k == 1)
+        {
+            // The lone note continues whichever line it is closer to; the other
+            // line rests.
+            const int d0 = line0LastPitch >= 0 ? std::abs (handNotes[0] - line0LastPitch) : 1 << 20;
+            const int d1 = line1LastPitch >= 0 ? std::abs (handNotes[0] - line1LastPitch) : 1 << 20;
+            v[0] = (d1 < d0) ? 1 : 0;
+            return v;
+        }
+
+        // Pick the secondary note: the non-lead note closest to line 1's last
+        // pitch, else the longest-held non-lead note, else the other extreme.
+        int secIdx = -1;
+        if (line1LastPitch >= 0)
+        {
+            int best = 1 << 20;
+            for (int i = 0; i < k; ++i)
+            {
+                if (i == leadIdx) continue;
+                const int d = std::abs (handNotes[static_cast<size_t> (i)] - line1LastPitch);
+                if (d < best) { best = d; secIdx = i; }
+            }
+        }
+        else
+        {
+            int bestDur = -1;
+            for (int i = 0; i < k; ++i)
+            {
+                if (i == leadIdx) continue;
+                const int d = i < static_cast<int> (handDurations.size()) ? handDurations[static_cast<size_t> (i)] : 0;
+                if (d > bestDur) { bestDur = d; secIdx = i; }
+            }
+        }
+        if (secIdx < 0)
+            secIdx = leadIsTop ? 0 : k - 1;
+
+        v[static_cast<size_t> (secIdx)] = 1;      // everything else stays on line 0
+        return v;
+    }
+
     double handDifficulty (int noteCount, int spanSemis) noexcept
     {
         const double byCount = std::clamp ((noteCount - 2) / 4.0, 0.0, 1.0);

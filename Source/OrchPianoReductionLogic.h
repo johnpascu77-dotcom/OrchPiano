@@ -154,6 +154,23 @@ namespace ocpn
     // hold the hand split + hysteresis stable within a phrase.
     std::vector<int> phraseStarts (const std::vector<double>& onsets, double gapThreshold);
 
+    // ---- Phase 5b-2: per-line voice streaming --------------------------
+    //
+    // Assign one hand's kept notes (ascending, with durations) to voice line 0
+    // (the lead - melody for the RH, bass for the LH) or line 1 (the secondary
+    // inner line). Line 1 is used only when the group needs it: a held note
+    // sitting under a shorter one (`maxDur >= 2*minDur`), or line 1 is still
+    // sounding (`secondaryActive`). Otherwise everything goes to line 0 (one
+    // voice, no spurious rests). The processor owns the line state across groups
+    // and passes each line's last pitch (-1 = inactive) for continuity.
+    // `leadIsTop` true for the RH, false for the LH. Returns 0/1 per note.
+    std::vector<int> streamHandVoices (const std::vector<int>& handNotes,
+                                       const std::vector<int>& handDurations,
+                                       int line0LastPitch,
+                                       int line1LastPitch,
+                                       bool secondaryActive,
+                                       bool leadIsTop);
+
     // Estimate 0..1 how hard an n-note chord spanning `spanSemis` is for one
     // hand (streaming proxy: count + span; the planning engine adds a
     // hand-transition term).

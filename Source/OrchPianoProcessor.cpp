@@ -132,7 +132,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
 
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID { "handVoices", 1 }, "Voices per Hand",
-        juce::StringArray { "1 (clean 2-staff)", "2 (lead + accompaniment)" }, 0));
+        juce::StringArray { "Auto (streamed)", "1 (clean 2-staff)", "2 (lead + accompaniment)" }, 0));
 
     params.push_back (std::make_unique<juce::AudioParameterChoice>(
         juce::ParameterID { "revoice", 1 }, "Re-voice",
@@ -179,6 +179,14 @@ void OrchPianoAudioProcessor::resetNoteMap()
     prevGroupNotes.clear();
     prevGroupHands.clear();
     prevKeptNotes.clear();
+    resetVoiceLines();
+}
+
+void OrchPianoAudioProcessor::resetVoiceLines()
+{
+    for (auto* l : { rhLine, lhLine })
+        for (int i = 0; i < 2; ++i)
+            l[i] = {};
 }
 
 void OrchPianoAudioProcessor::dampAllRinging (juce::MidiBuffer& output, int sample)
@@ -299,7 +307,7 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
     const int    perHand   = maxNotesPerHandParam != nullptr ? juce::roundToInt (maxNotesPerHandParam->load()) : 4;
     const int    maxSpan   = maxSpanParam         != nullptr ? juce::roundToInt (maxSpanParam->load()) : 14;
     const int    chanBase  = outChannelBaseParam  != nullptr ? juce::roundToInt (outChannelBaseParam->load()) : 1;
-    const int    handVoices = handVoicesParam     != nullptr ? juce::roundToInt (handVoicesParam->load()) + 1 : 1;
+    const int    handVoices = handVoicesParam     != nullptr ? juce::roundToInt (handVoicesParam->load()) : 0; // 0 Auto, 1 one, 2 two
     const bool   damp      = dampSuccessiveParam  != nullptr && dampSuccessiveParam->load() >= 0.5f;
     const bool   doLog     = decisionLogParam     != nullptr && decisionLogParam->load() >= 0.5f;
     const float  ceiling   = (repair || difficultyCeilingParam == nullptr) ? 0.0f : difficultyCeilingParam->load();
@@ -325,7 +333,10 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
 
     const auto handAssign = ocpn::assignHands (notes, splitNote, slack, prevGroupNotes, prevGroupHands);
 
-    if (damp)
+    // Auto voice streaming damps per output channel in the emit loop (so a held
+    // inner voice survives the melody's next attack); the fixed modes damp
+    // globally (successive notes on one voice per hand).
+    if (damp && handVoices != 0)
         dampAllRinging (output, sample);
 
     std::vector<int> keptNotes, keptHands, keptForMotion;
@@ -336,7 +347,7 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
         if (handsMode == 1 && hand != 1) continue;
         if (handsMode == 2 && hand != 2) continue;
 
-        std::vector<int> sub, subVel;
+        std::vector<int> sub, subVel, subDur;
         std::vector<ocpn::Role> subRoles;
         std::vector<double> subImp;
         for (size_t i = 0; i < notes.size(); ++i)
@@ -344,6 +355,7 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             if (handAssign[i] != hand) continue;
             sub.push_back (notes[i]);
             subVel.push_back (vels[i]);
+            subDur.push_back (durs[i]);
             subRoles.push_back (roles[i]);
             subImp.push_back (imp[i]);
         }
@@ -394,24 +406,50 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
 
         auto nn = [] (int n) { return juce::MidiMessage::getMidiNoteName (n, true, true, 3); };
 
-        // Voice-to-channel. `handVoices` = 1: one voice per hand (RH -> chanBase,
-        // LH -> chanBase+3) - a clean two-staff grand staff. `handVoices` = 2:
-        // split the lead off. Real per-line streaming is Phase 5.
-        const bool splitHand = handVoices == 2;
-        const int rhTop  = keep.back();
-        const int lhBot  = keep.front();
+        // --- Phase 5b-2: voice assignment for this hand's kept notes ---
+        // Channels: line 0 = the lead (RH melody -> chanBase / LH bass ->
+        // chanBase+3); line 1 = the secondary inner voice (RH -> chanBase+1 /
+        // LH -> chanBase+2).
+        const int line0Ch = juce::jlimit (1, 16, hand == 2 ? chanBase     : chanBase + 3);
+        const int line1Ch = juce::jlimit (1, 16, hand == 2 ? chanBase + 1 : chanBase + 2);
+        VoiceLineRT* lines = (hand == 2) ? rhLine : lhLine;
+
+        std::vector<int> keptOut, keptDur;
+        for (size_t ki = 0; ki < keep.size(); ++ki)
+        {
+            keptOut.push_back (ocpn::clampNote (ki < outPitch.size() ? outPitch[ki] : keptPitch[ki]));
+            keptDur.push_back (subDur[static_cast<size_t> (keep[ki])]);
+        }
+
+        std::vector<int> voice (keptOut.size(), 0);
+        if (handVoices == 0)   // Auto - stream
+        {
+            const bool secActive = lines[1].lastPitch >= 0
+                                && groupPpq - lines[1].lastActivePpq < 2.0;
+            voice = ocpn::streamHandVoices (keptOut, keptDur,
+                                            lines[0].lastPitch, lines[1].lastPitch,
+                                            secActive, hand == 2);
+        }
+        else if (handVoices == 2)   // forced positional split
+        {
+            const int leadKi = (hand == 2) ? static_cast<int> (keptOut.size()) - 1 : 0;
+            for (int i = 0; i < static_cast<int> (voice.size()); ++i)
+                voice[static_cast<size_t> (i)] = (i == leadKi) ? 0 : 1;
+        }
+        // handVoices == 1: all voice 0 (default).
 
         std::vector<int> emittedPitchesThisHand;
+        int line0Emit = -1, line1Emit = -1;
+        const size_t priorActiveCount = activeNotes.size();   // for per-channel damp
 
         for (size_t ki = 0; ki < keep.size(); ++ki)
         {
             const int idx = keep[ki];
             const int inPitch = sub[static_cast<size_t> (idx)];
-            int pitch = ocpn::clampNote (ki < outPitch.size() ? outPitch[ki] : inPitch);
+            const int pitch = keptOut[ki];
             const auto& src = byPitch[inPitch];
 
-            // Re-voice can collapse two inner notes onto one pitch - drop the
-            // duplicate (consume its note-off).
+            // Re-voice can collapse two inner notes onto one pitch - drop the dup.
             if (std::find (emittedPitchesThisHand.begin(), emittedPitchesThisHand.end(), pitch)
                 != emittedPitchesThisHand.end())
             {
@@ -425,15 +463,30 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
                 logEvent (groupPpq, "revoice  " + nn (inPitch) + " -> " + nn (pitch) + "   "
                           + (revoice == 1 ? "framework: low-interval fix" : "close-position re-stack"));
 
-            const int outCh = juce::jlimit (1, 16, hand == 2
-                ? ((splitHand && idx != rhTop) ? chanBase + 1 : chanBase)
-                : ((splitHand && idx != lhBot) ? chanBase + 2 : chanBase + 3));
+            const int outCh = (voice[ki] == 1) ? line1Ch : line0Ch;
+
+            // Damp on next attack: per output channel in Auto (a held inner voice
+            // on the other channel is left ringing). Only prior-group notes.
+            if (damp && handVoices == 0)
+            {
+                for (size_t ai = 0; ai < priorActiveCount && ai < activeNotes.size(); ++ai)
+                {
+                    auto& t = activeNotes[ai];
+                    if (t.outputNote >= 0 && t.outputChannel == outCh)
+                    {
+                        output.addEvent (juce::MidiMessage::noteOff (outCh, t.outputNote), sample);
+                        t.outputNote = -2;
+                    }
+                }
+            }
 
             const int vel = juce::jlimit (1, 127,
                 juce::roundToInt (subVel[static_cast<size_t> (idx)] * velScale));
 
             output.addEvent (juce::MidiMessage::noteOn (outCh, pitch, static_cast<juce::uint8> (vel)), sample);
             activeNotes.push_back ({ src.channel, inPitch, pitch, outCh });
+
+            (voice[ki] == 1 ? line1Emit : line0Emit) = pitch;
 
             keptNotes.push_back (pitch);
             keptHands.push_back (hand);
@@ -443,6 +496,9 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             if (subRoles[static_cast<size_t> (idx)] == ocpn::Role::Melody) melodyOut = pitch;
             if (subRoles[static_cast<size_t> (idx)] == ocpn::Role::Bass)   bassOut   = pitch;
         }
+
+        if (line0Emit >= 0) { lines[0].lastPitch = line0Emit; lines[0].lastActivePpq = groupPpq; }
+        if (line1Emit >= 0) { lines[1].lastPitch = line1Emit; lines[1].lastActivePpq = groupPpq; }
 
         // keepBassOctaves == Add: put an octave under the bass if there isn't
         // one already and it doesn't fall below its low-interval limit.
@@ -529,6 +585,7 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 prevGroupNotes.clear();
                 prevGroupHands.clear();
                 prevKeptNotes.clear();
+                resetVoiceLines();
             }
             planLastOnsetPpq = gp;
 
@@ -647,6 +704,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         planBuf.clear();
         planPhraseSplit = -1;
         planLastOnsetPpq = -1.0e18;
+        resetVoiceLines();
         beatsPerBar = hostBeatsPerBar > 0.0 ? hostBeatsPerBar : 4.0;
         const juce::ScopedLock sl (decisionLock);
         decisionLines.clear();
@@ -662,6 +720,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         prevGroupNotes.clear();
         prevGroupHands.clear();
         prevKeptNotes.clear();
+        resetVoiceLines();
     }
     lastBlockStartPpq = blockStartPpq;
     wasPlaying = playing;

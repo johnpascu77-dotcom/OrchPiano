@@ -100,6 +100,11 @@ private:
     };
     std::vector<TrackedNote> activeNotes;
 
+    // ---- Phase 5b-2: per-line voice state (planning engine, per phrase) ----
+    struct VoiceLineRT { int lastPitch = -1; double lastActivePpq = -1.0e18; };
+    VoiceLineRT rhLine[2], lhLine[2];
+    void resetVoiceLines();
+
     // ---- open onset group (streaming engine) ----
     struct HeldOn
     {

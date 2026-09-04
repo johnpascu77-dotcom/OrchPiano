@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 5b-1 (phrase-stable split + rhythm/pad importance; output delayed)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 5b-2 (per-line voice streaming; planning output delayed)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
@@ -21,6 +21,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addChoiceRow ("operatingMode", "Mode", { "Repair", "Reduce", "Transform" });
     addChoiceRow ("hands", "Hands", { "Both", "Left", "Right" });
     addChoiceRow ("maxVoices", "Max Voices", { "4", "6" });
+    addChoiceRow ("handVoices", "Voices per Hand", { "Auto (streamed)", "1 (clean)", "2 (positional)" });
     addSliderRow ("splitNote", "Hand Split Note", 0, 127);
     addSliderRow ("maxNotesPerHand", "Notes / Hand (Reduce)", 2, 8);
     addSliderRow ("maxSpan", "Max Hand Span (st)", 8, 16);
@@ -36,7 +37,6 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addToggleRow ("decisionLog", "Write Decision Log");
     addSliderRow ("onsetWindowMs", "Onset Window (ms)", 5, 200);
     addSliderRow ("outChannelBase", "Out Channel Base (+0..+3)", 1, 13);
-    addChoiceRow ("handVoices", "Voices per Hand", { "1 (clean 2-staff)", "2 (lead + accomp.)" });
     addSliderRow ("wMelodyBass", "Weight: Melody/Bass", 0.0, 2.0);
     addSliderRow ("wVelocity", "Weight: Velocity", 0.0, 2.0);
     addSliderRow ("wDouble", "Weight: Doubling Penalty", 0.0, 2.0);

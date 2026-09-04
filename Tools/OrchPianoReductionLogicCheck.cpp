@@ -295,6 +295,30 @@ int main()
         check (eq (ps, { 0, 3, 5 }), "phraseStarts: boundaries at index 0 and after each >=1-beat gap");
     }
 
+    // --- Phase 5b-2: per-line voice streaming --------------------
+    {
+        // A block chord (uniform durations, line 1 idle) -> one voice.
+        check (eq (streamHandVoices ({ 60, 64, 67 }, { 100, 100, 100 }, -1, -1, false, true),
+                   { 0, 0, 0 }), "streamHandVoices: block chord -> all line 0");
+
+        // A held note under a short one -> two voices; the held one is line 1.
+        check (eq (streamHandVoices ({ 55, 72 }, { 400, 80 }, -1, -1, false, true),
+                   { 1, 0 }), "streamHandVoices RH: held lower note -> line 1, moving top -> line 0");
+        check (eq (streamHandVoices ({ 48, 64 }, { 80, 400 }, -1, -1, false, false),
+                   { 0, 1 }), "streamHandVoices LH: bass (lead) -> line 0, held upper -> line 1");
+
+        // Line 1 still sounding -> stay in two voices even for a lone note; it
+        // continues whichever line it is nearer.
+        check (eq (streamHandVoices ({ 71 }, { 100 }, 72, 55, true, true),
+                   { 0 }), "streamHandVoices: lone note near line 0 -> line 0 while line 1 holds");
+        check (eq (streamHandVoices ({ 56 }, { 100 }, 72, 55, true, true),
+                   { 1 }), "streamHandVoices: lone note near line 1 -> line 1");
+
+        // No held-note evidence and line 1 idle -> one voice even for a 2-note group.
+        check (eq (streamHandVoices ({ 60, 64 }, { 100, 110 }, -1, -1, false, true),
+                   { 0, 0 }), "streamHandVoices: 2 similar-length notes, line 1 idle -> one voice");
+    }
+
     // --- Phase 5a: adaptive hand split (KDE) ---------------------
     {
         // Too little data -> return the prior untouched.
