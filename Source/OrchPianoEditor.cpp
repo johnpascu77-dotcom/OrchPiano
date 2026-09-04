@@ -13,7 +13,8 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 5d (OrchCapture delay-compensation CC; planning output delayed)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 5d (OrchCapture delay-compensation CC; planning output delayed)"
+                         "  |  compiled " __DATE__ " " __TIME__, juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
