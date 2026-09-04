@@ -35,6 +35,22 @@ target_sources(OrchPiano
         Source/OrchPianoReductionLogic.cpp
 )
 
+# Regenerated on EVERY build (add_custom_target has no file-based up-to-date
+# check, unlike add_custom_command(OUTPUT ...)) so the editor's build label
+# always reflects the actual latest build, even when only a different .cpp
+# changed and this one wasn't recompiled for its own sake.
+set(ORCHPIANO_BUILD_TIMESTAMP_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/OrchPianoBuildTimestamp.h")
+add_custom_target(OrchPianoStampBuildTime ALL
+    COMMAND ${CMAKE_COMMAND}
+            -DHEADER_PATH=${ORCHPIANO_BUILD_TIMESTAMP_HEADER}
+            -DMACRO_NAME=ORCHPIANO_BUILD_TIMESTAMP
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/GenerateBuildTimestamp.cmake"
+    BYPRODUCTS "${ORCHPIANO_BUILD_TIMESTAMP_HEADER}"
+    COMMENT "Stamping OrchPiano build timestamp"
+)
+add_dependencies(OrchPiano OrchPianoStampBuildTime)
+target_include_directories(OrchPiano PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+
 target_compile_definitions(OrchPiano
     PUBLIC
         JUCE_WEB_BROWSER=0
