@@ -78,6 +78,7 @@ private:
     std::atomic<float>* onsetWindowMsParam    = nullptr;
     std::atomic<float>* outChannelBaseParam   = nullptr;
     std::atomic<float>* lookaheadBeatsParam   = nullptr;
+    std::atomic<float>* delayCompensationCcParam = nullptr;
     std::atomic<float>* difficultyCeilingParam = nullptr;
     std::atomic<float>* keepBassOctavesParam  = nullptr;
     std::atomic<float>* keepMelodyOctavesParam = nullptr;
@@ -154,6 +155,8 @@ private:
     double lastBlockStartPpq = -1.0e18;
     int planPhraseSplit = -1;         // hand split held stable across the current phrase
     double planLastOnsetPpq = -1.0e18;
+    int lastSentDelayCcValue = -1;    // Phase 5d: delay-compensation CC state
+    double lastDelayCcSentPpq = -1.0e18;
     std::atomic<int> adaptiveSplit { 60 };
     std::atomic<int> planBufCount { 0 };
 

@@ -46,6 +46,7 @@ OrchPianoAudioProcessor::OrchPianoAudioProcessor()
     onsetWindowMsParam    = parameters.getRawParameterValue ("onsetWindowMs");
     outChannelBaseParam   = parameters.getRawParameterValue ("outChannelBase");
     lookaheadBeatsParam   = parameters.getRawParameterValue ("lookaheadBeats");
+    delayCompensationCcParam = parameters.getRawParameterValue ("delayCompensationCc");
     difficultyCeilingParam = parameters.getRawParameterValue ("difficultyCeiling");
     keepBassOctavesParam  = parameters.getRawParameterValue ("keepBassOctaves");
     keepMelodyOctavesParam = parameters.getRawParameterValue ("keepMelodyOctaves");
@@ -128,6 +129,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "lookaheadBeats", 1 }, "Lookahead (beats, 0 = live)", 0, 16, 4));
 
+    // Reports the constant lookahead delay downstream (0..16 fits directly as
+    // the CC value) so OrchCapture can shift its capture back by the same
+    // amount instead of landing `lookaheadBeats` late. Matches OrchCapture's
+    // `lookaheadCompensationCc` param default (113). 0 = off.
+    params.push_back (std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID { "delayCompensationCc", 1 }, "Delay Compensation CC# (0=off)", 0, 127, 113));
+
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "outChannelBase", 1 }, "Out Channel Base (voices +0..+3)", 1, 13, 1));
 
@@ -186,6 +194,8 @@ void OrchPianoAudioProcessor::resetNoteMap()
     prevGroupHands.clear();
     prevKeptNotes.clear();
     resetVoiceLines();
+    lastSentDelayCcValue = -1;
+    lastDelayCcSentPpq = -1.0e18;
 }
 
 void OrchPianoAudioProcessor::resetVoiceLines()
@@ -927,6 +937,33 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     }
     lastBlockStartPpq = blockStartPpq;
     wasPlaying = playing;
+
+    // Phase 5d: report the constant lookahead delay downstream so OrchCapture
+    // (or anything else that cares) can shift its capture back by the same
+    // amount. Sent at transport start, on any value change, and re-sent every 4
+    // bars as a safety net for a late-loading listener. A plain CC, observed and
+    // passed through - never consumed - by anything downstream.
+    if (planning && playing)
+    {
+        const int compCc = delayCompensationCcParam != nullptr
+            ? juce::roundToInt (delayCompensationCcParam->load()) : 0;
+        if (compCc > 0)
+        {
+            const bool valueChanged = lookaheadBeats != lastSentDelayCcValue;
+            const bool dueForResend = blockStartPpq - lastDelayCcSentPpq >= 4.0 * juce::jmax (1.0, beatsPerBar);
+            if (valueChanged || dueForResend)
+            {
+                output.addEvent (juce::MidiMessage::controllerEvent (1, compCc, juce::jlimit (0, 127, lookaheadBeats)), 0);
+                lastSentDelayCcValue = lookaheadBeats;
+                lastDelayCcSentPpq = blockStartPpq;
+            }
+        }
+    }
+    else if (! playing)
+    {
+        lastSentDelayCcValue = -1;
+        lastDelayCcSentPpq = -1.0e18;
+    }
 
     if (transform)
         return; // not built yet - transparent pass-through

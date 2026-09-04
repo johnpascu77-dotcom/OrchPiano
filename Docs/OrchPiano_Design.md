@@ -44,7 +44,8 @@ cmake --build build --config Release --target OrchPianoReductionLogicCheck
   instances agree without IPC.
 - **`Source/OrchPianoProcessor.{h,cpp}`** — APVTS params, MIDI I/O, note tracking (ONF
   `TrackedNote` vector pattern), the two engines, transport-edge handling, the decision-log
-  `juce::Thread` writer (OrchHarp `MarkerWriter` pattern), OrchCapture IPC subscription (Phase 5).
+  `juce::Thread` writer (OrchHarp `MarkerWriter` pattern), the delay-compensation CC broadcast to
+  OrchCapture (§6.1 — no IPC, a plain CC).
 - **`Source/OrchPianoEditor.{h,cpp}`** — `TabbedComponent` + `LayoutPanel` (layout delegated to
   the editor via a lambda), the melody/bass readout component, `juce::Timer` status refresh.
 - **`Tools/OrchPianoReductionLogicCheck.cpp`** — console check, `[PASS]/[FAIL]` counter, returns
@@ -104,7 +105,7 @@ Each phase ends green on the check tool and (from Phase 2) loadable in Bitwig.
 | **5c-2 — tremolo / repeated-note collapse** ✅ `2d0175d` | `ocpn::detectFigure` — over the next ≤20 buffered onset groups, a run of ≥4 hits at a regular interval ≤0.4 beat alternating between two pitch sets → Tremolo (A≠B) or RepeatedNote (A==B). The planning engine emits the first 1–2 chords **held to the run's end** (re-struck by `maxRingBeats`, released by a scheduled hard-off), consumes the repeats + their note-offs, and logs `tremolo A~B (N hits, K beats) -> held`. `arpeggioRespace` + `octaveMovePassages` → 5c-2b. | planning | +6 (detectFigure) |
 | **5c-2b — arpeggio / octave moves** | `arpeggioRespace` (wide arpeggio > hand → re-spaced); `octaveMovePassages` (whole-voice octave shift for a phrase out of hand range). | planning | — |
 | **5c-3 — ornaments + dynamics marks** | input trill / grace-group → notation marker not note-spam; carry source velocity shaping to Dorico dynamics (`dynamicContour` "Preserve+Mark"). | planning | ornament detection |
-| **5d — OrchCapture integration** | `inputSource` (Direct / OrchCapture merged) + coordinator IPC subscription; `melodyChannels`/`bassChannels` source hints. **OrchCapture-side:** coordinator live merged-tap emit, per-lane time-offset compensation, feedback guard. | planning | — |
+| **5d — OrchCapture delay compensation** ✅ `<p5d>` | **Re-scoped, see §6.1.** `delayCompensationCc` param (default 113): OrchPiano reports its constant `lookaheadBeats` delay on this CC (0..16 fits directly), sent at transport start / on value change / re-sent every 4 bars. **OrchCapture-side (its own repo):** `lookaheadCompensationCc` param (default 113, matches) — observes the CC (still passes it through untouched) and subtracts the reported beats from every captured note's onset/release, so the take lands at its real position instead of `lookaheadBeats` late. | planning | — |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |
 
 Transform-mode (rig) features (Center/Span travel, contour, field-CC read) port from OrchHarp
@@ -216,11 +217,39 @@ start.)*
 
 ## 6. Cross-repo dependencies
 
-OrchCapture (`project_orchcapture_scope`), all landing at Phase 5:
-1. Coordinator **live merged-tap emit** — expose the merged note stream to a subscriber.
-2. **Per-lane constant time-offset compensation** — subtract OrchPiano's reported `lookaheadBeats`
-   delay from its capture lane on export.
-3. **Feedback guard** — exclude OrchPiano's own output lane from the merged stream it feeds back.
+### 6.1 Re-scoped at 5d (2026-09-04) — the coordinator merged-tap idea was unnecessary
+
+The original plan (§1 architecture diagram, §2, the P5d row before this edit) had OrchPiano
+*subscribing* to OrchCapture's coordinator for a live merged view of the whole orchestra, needing
+new coordinator-side streaming + a feedback guard to keep OrchPiano from consuming its own output.
+
+That solves a problem that doesn't exist: **OrchPiano is already a MIDI effect that reads whatever
+it's fed** (its `Direct` input path, built since Phase 2). A **Bitwig MIDI bus** — every orchestral
+track's MIDI routed to one bus, OrchPiano sitting on it — already delivers "the whole score" with
+zero new code, and OrchCaptureLink's coordinator is architecturally push-at-end-of-take anyway
+(`OrchCaptureLink.h`: "on every completed take"), not a live stream — building one would have been
+real new surface area on a repo the ecosystem docs call **complete**.
+
+What was genuinely missing was narrower: **OrchPiano's own captured output lands `lookaheadBeats`
+late.** Fixed with the CC-broadcast pattern this ecosystem already uses everywhere (MC's pitch
+field, OrchHarp's field read) — no coordinator change, no feedback guard needed (there is no
+subscription to feed back into):
+1. OrchPiano reports its delay on a plain CC (§5d row above).
+2. OrchCapture observes the same CC (still passes it through, stays transparent) and subtracts it
+   at capture time - both `finalizeOpenNotes` and the note-off branch in `processBlock`, so it
+   applies whether a take stops mid-note or ends cleanly. `OrchCaptureProcessor.{h,cpp}`, commit
+   in that repo.
 
 No MC change needed (Transform-mode field read reuses MC's existing 2-CC broadcast, as OrchHarp
-Phase 2d does).
+Phase 2d does). No OrchCaptureLink / coordinator change. `inputSource`, `melodyChannels`,
+`bassChannels` are dropped from the plan - Direct input on a merge bus covers the orchestral case.
+
+### 6.2 Using it - the merge-bus workflow (Reduce mode, full orchestra)
+
+1. Route every orchestral track's MIDI output to one Bitwig bus track (or however Bitwig sends the
+   note path to a spare instrument track's MIDI-in - each track keeps its own audio chain
+   untouched, this is a MIDI tap only).
+2. OrchPiano sits on that bus track, `operatingMode = Reduce`, `lookaheadBeats > 0`.
+3. Its own output (piano reduction) goes on to an OrchCapture instance as normal, same CC# on both
+   (`delayCompensationCc` on OrchPiano == `lookaheadCompensationCc` on OrchCapture, both default
+   113) - the capture lands at the right bar without a manual nudge.

@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 5c-2 (tremolo/repeated-note collapse; planning output delayed)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 5d (OrchCapture delay-compensation CC; planning output delayed)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
@@ -27,6 +27,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addSliderRow ("maxSpan", "Max Hand Span (st)", 8, 16);
     addSliderRow ("crossoverSlack", "Crossover Slack (st)", 0, 12);
     addSliderRow ("lookaheadBeats", "Lookahead (beats, 0=live)", 0, 16);
+    addSliderRow ("delayCompensationCc", "Delay Comp. CC# (0=off)", 0, 127);
     addSliderRow ("difficultyCeiling", "Difficulty Ceiling (0=off)", 0.0, 1.0);
     addChoiceRow ("revoice", "Re-voice", { "Off", "Framework", "Close" });
     addChoiceRow ("lowIntervalStrictness", "Low-Interval Strictness", { "Off", "Loose", "Strict" });
