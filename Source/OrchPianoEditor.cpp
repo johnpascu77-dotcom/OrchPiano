@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 5b-2 (per-line voice streaming; planning output delayed)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 5c-1 (maxRingBeats held-note cut; planning output delayed)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
@@ -31,6 +31,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addChoiceRow ("revoice", "Re-voice", { "Off", "Framework", "Close" });
     addChoiceRow ("lowIntervalStrictness", "Low-Interval Strictness", { "Off", "Loose", "Strict" });
     addChoiceRow ("dynamicContour", "Dynamic Contour", { "Off", "Preserve" });
+    addSliderRow ("maxRingBeats", "Max Ring (beats, 0=off)", 0, 8);
     addChoiceRow ("keepBassOctaves", "Keep Bass Octaves", { "Off", "Keep", "Add" });
     addToggleRow ("keepMelodyOctaves", "Keep Melody Octaves");
     addToggleRow ("dampSuccessive", "Damp On Next Attack");

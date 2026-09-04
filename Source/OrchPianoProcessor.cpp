@@ -54,6 +54,7 @@ OrchPianoAudioProcessor::OrchPianoAudioProcessor()
     revoiceParam          = parameters.getRawParameterValue ("revoice");
     lowIntervalStrictnessParam = parameters.getRawParameterValue ("lowIntervalStrictness");
     dynamicContourParam   = parameters.getRawParameterValue ("dynamicContour");
+    maxRingBeatsParam     = parameters.getRawParameterValue ("maxRingBeats");
     wMelodyBassParam      = parameters.getRawParameterValue ("wMelodyBass");
     wVelocityParam        = parameters.getRawParameterValue ("wVelocity");
     wDoubleParam          = parameters.getRawParameterValue ("wDouble");
@@ -146,6 +147,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
         juce::ParameterID { "dynamicContour", 1 }, "Dynamic Contour",
         juce::StringArray { "Off", "Preserve" }, 1));
 
+    params.push_back (std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID { "maxRingBeats", 1 }, "Max Ring (beats, 0 = off)", 0, 8, 4));
+
     // Advanced - importance weights.
     params.push_back (std::make_unique<juce::AudioParameterFloat>(
         juce::ParameterID { "wMelodyBass", 1 }, "Weight: Melody/Bass",
@@ -174,6 +178,7 @@ void OrchPianoAudioProcessor::resetNoteMap()
     activeNotes.clear();
     currentGroup.clear();
     planBuf.clear();
+    pendingRestrikes.clear();
     planPhraseSplit = -1;
     planLastOnsetPpq = -1.0e18;
     prevGroupNotes.clear();
@@ -206,6 +211,11 @@ void OrchPianoAudioProcessor::handleNoteOff (const juce::MidiMessage& message, i
 {
     const int ch = message.getChannel();
     const int note = message.getNoteNumber();
+
+    // A note that ends naturally: stop re-striking it.
+    pendingRestrikes.erase (std::remove_if (pendingRestrikes.begin(), pendingRestrikes.end(),
+        [ch, note] (const PendingRestrike& p) { return p.inCh == ch && p.inNote == note; }),
+        pendingRestrikes.end());
 
     for (auto it = activeNotes.begin(); it != activeNotes.end(); ++it)
     {
@@ -315,6 +325,7 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
     const bool   keepMelO  = keepMelodyOctavesParam == nullptr || keepMelodyOctavesParam->load() >= 0.5f;
     const int    revoice   = revoiceParam         != nullptr ? juce::roundToInt (revoiceParam->load()) : 1;
     const bool   dynContour = dynamicContourParam != nullptr && dynamicContourParam->load() >= 0.5f;
+    const int    maxRing   = maxRingBeatsParam    != nullptr ? juce::roundToInt (maxRingBeatsParam->load()) : 0;
     const auto   lilStrict = static_cast<ocpn::LilStrictness> (
         lowIntervalStrictnessParam != nullptr ? juce::jlimit (0, 2, juce::roundToInt (lowIntervalStrictnessParam->load())) : 1);
 
@@ -486,6 +497,18 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             output.addEvent (juce::MidiMessage::noteOn (outCh, pitch, static_cast<juce::uint8> (vel)), sample);
             activeNotes.push_back ({ src.channel, inPitch, pitch, outCh });
 
+            // maxRingBeats: a note held longer than the limit is re-articulated
+            // every that-many beats (piano tone decays). durTicks is ppq*100.
+            const int noteDur = subDur[static_cast<size_t> (idx)];
+            if (maxRing > 0 && noteDur > static_cast<int> ((maxRing + 0.5) * 100.0))
+            {
+                pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel,
+                                              groupPpq + maxRing, groupPpq + noteDur / 100.0 });
+                if (doLog)
+                    logEvent (groupPpq, "re-strike " + nn (pitch) + " every " + juce::String (maxRing)
+                              + " beats (held " + juce::String (noteDur / 100.0, 1) + ")");
+            }
+
             (voice[ki] == 1 ? line1Emit : line0Emit) = pitch;
 
             keptNotes.push_back (pitch);
@@ -633,6 +656,45 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
     planBufCount.store (static_cast<int> (planBuf.size()));
 }
 
+void OrchPianoAudioProcessor::drainRestrikes (juce::MidiBuffer& output, double blockStartPpq,
+                                              double lookaheadPpq, double ppqPerSample,
+                                              int numSamples, int maxRingBeats)
+{
+    if (pendingRestrikes.empty() || ppqPerSample <= 0.0)
+        return;
+
+    const double cutoff = (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
+    const double step = juce::jmax (1, maxRingBeats);
+
+    for (auto it = pendingRestrikes.begin(); it != pendingRestrikes.end();)
+    {
+        bool done = false;
+        while (! done && it->nextPpq <= cutoff && it->nextPpq < it->endPpq)
+        {
+            // Only re-strike if the note is still sounding (its real note-off
+            // hasn't been processed).
+            bool live = false;
+            for (const auto& t : activeNotes)
+                if (t.outputNote == it->pitch && t.outputChannel == it->outCh
+                    && t.channel == it->inCh && t.inputNote == it->inNote)
+                    { live = true; break; }
+            if (! live) { done = true; break; }
+
+            const int s = juce::jlimit (0, juce::jmax (0, numSamples - 1),
+                juce::roundToInt ((it->nextPpq + lookaheadPpq - blockStartPpq) / ppqPerSample));
+            output.addEvent (juce::MidiMessage::noteOff (it->outCh, it->pitch), juce::jmax (0, s - 1));
+            output.addEvent (juce::MidiMessage::noteOn (it->outCh, it->pitch,
+                                                       static_cast<juce::uint8> (it->vel)), s);
+            it->nextPpq += step;
+        }
+
+        if (done || it->nextPpq >= it->endPpq)
+            it = pendingRestrikes.erase (it);
+        else
+            ++it;
+    }
+}
+
 // ---- processBlock -------------------------------------------------------
 
 void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
@@ -687,6 +749,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         // captured post-stop anyway - drop it. Run the take a bar or two past the
         // last real note; P5d (OrchCapture time-offset) will let it drain cleanly.
         planBuf.clear();
+    pendingRestrikes.clear();
         planBufCount.store (0);
         dampAllRinging (output, 0);
         activeNotes.clear();
@@ -702,6 +765,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         prevGroupHands.clear();
         prevKeptNotes.clear();
         planBuf.clear();
+    pendingRestrikes.clear();
         planPhraseSplit = -1;
         planLastOnsetPpq = -1.0e18;
         resetVoiceLines();
@@ -714,6 +778,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     if (planning && playing && wasPlaying && blockStartPpq + 0.5 < lastBlockStartPpq && ! planBuf.empty())
     {
         planBuf.clear();
+    pendingRestrikes.clear();
         planPhraseSplit = -1;
         planLastOnsetPpq = -1.0e18;
         dampAllRinging (output, 0);
@@ -737,6 +802,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         {
             currentGroup.clear();
             planBuf.clear();
+    pendingRestrikes.clear();
             dampAllRinging (output, samplePosition);
             activeNotes.clear();
             output.addEvent (message, samplePosition);
@@ -777,7 +843,9 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
 
     if (planning)
     {
+        const int maxRing = maxRingBeatsParam != nullptr ? juce::roundToInt (maxRingBeatsParam->load()) : 0;
         flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples);
+        drainRestrikes (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, maxRing);
     }
     else if (! currentGroup.empty())
     {

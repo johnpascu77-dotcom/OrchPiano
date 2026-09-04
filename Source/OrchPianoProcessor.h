@@ -86,6 +86,7 @@ private:
     std::atomic<float>* revoiceParam          = nullptr;
     std::atomic<float>* lowIntervalStrictnessParam = nullptr;
     std::atomic<float>* dynamicContourParam   = nullptr;
+    std::atomic<float>* maxRingBeatsParam     = nullptr;
     std::atomic<float>* wMelodyBassParam      = nullptr;
     std::atomic<float>* wVelocityParam        = nullptr;
     std::atomic<float>* wDoubleParam          = nullptr;
@@ -104,6 +105,18 @@ private:
     struct VoiceLineRT { int lastPitch = -1; double lastActivePpq = -1.0e18; };
     VoiceLineRT rhLine[2], lhLine[2];
     void resetVoiceLines();
+
+    // ---- Phase 5c: maxRingBeats re-strike (planning engine) ----
+    // A held note longer than `maxRingBeats` is re-articulated every that-many
+    // beats (piano tone decays; an 8-beat tie is neither idiomatic nor what a
+    // pianist plays). The re-strikes are scheduled forward; the real (buffered)
+    // note-off still releases the note at its true end.
+    struct PendingRestrike
+    {
+        int outCh = 0, pitch = 0, inCh = 0, inNote = 0, vel = 100;
+        double nextPpq = 0.0, endPpq = 0.0;
+    };
+    std::vector<PendingRestrike> pendingRestrikes;
 
     // ---- open onset group (streaming engine) ----
     struct HeldOn
@@ -161,6 +174,8 @@ private:
                       int emitSample, double groupPpq, juce::MidiBuffer& output);
     void flushPlanBuffer (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
                           double ppqPerSample, int numSamples, int onsetWindowSamples);
+    void drainRestrikes (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
+                         double ppqPerSample, int numSamples, int maxRingBeats);
     void dampAllRinging (juce::MidiBuffer& output, int sample);
     void handleNoteOff (const juce::MidiMessage& message, int sample, juce::MidiBuffer& output);
     void logEvent (double ppq, const juce::String& text);
