@@ -179,6 +179,7 @@ void OrchPianoAudioProcessor::resetNoteMap()
     currentGroup.clear();
     planBuf.clear();
     pendingRestrikes.clear();
+    resetFigureState();
     planPhraseSplit = -1;
     planLastOnsetPpq = -1.0e18;
     prevGroupNotes.clear();
@@ -192,6 +193,15 @@ void OrchPianoAudioProcessor::resetVoiceLines()
     for (auto* l : { rhLine, lhLine })
         for (int i = 0; i < 2; ++i)
             l[i] = {};
+}
+
+void OrchPianoAudioProcessor::resetFigureState()
+{
+    figureEndPpq = -1.0e18;
+    figSetA.clear();
+    figSetB.clear();
+    figGroupsToEmit = 0;
+    pendingHardOffs.clear();
 }
 
 void OrchPianoAudioProcessor::dampAllRinging (juce::MidiBuffer& output, int sample)
@@ -284,12 +294,16 @@ void OrchPianoAudioProcessor::flushGroup (juce::MidiBuffer& output, int flushSam
 void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
                                            int splitNote,
                                            int emitSample, double groupPpq,
-                                           juce::MidiBuffer& output)
+                                           juce::MidiBuffer& output,
+                                           double figureReleasePpq)
 {
     if (group.empty())
         return;
 
     const int sample = juce::jmax (0, emitSample);
+    const bool isFigure = figureReleasePpq > groupPpq + 1.0e-6;
+    const int figureDurTicks = isFigure
+        ? juce::jmax (1, juce::roundToInt ((figureReleasePpq - groupPpq) * 100.0)) : 0;
 
     // Unique pitches, ascending; keep the loudest onset per pitch.
     std::map<int, HeldOn> byPitch;
@@ -497,9 +511,14 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             output.addEvent (juce::MidiMessage::noteOn (outCh, pitch, static_cast<juce::uint8> (vel)), sample);
             activeNotes.push_back ({ src.channel, inPitch, pitch, outCh });
 
+            // A collapsed-figure note holds to figureReleasePpq and has no
+            // buffered note-off (it is consumed) - schedule a hard release.
+            const int noteDur = isFigure ? figureDurTicks : subDur[static_cast<size_t> (idx)];
+            if (isFigure)
+                pendingHardOffs.push_back ({ outCh, pitch, figureReleasePpq });
+
             // maxRingBeats: a note held longer than the limit is re-articulated
             // every that-many beats (piano tone decays). durTicks is ppq*100.
-            const int noteDur = subDur[static_cast<size_t> (idx)];
             if (maxRing > 0 && noteDur > static_cast<int> ((maxRing + 0.5) * 100.0))
             {
                 pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel,
@@ -567,6 +586,7 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
     // "chord".
     const double onsetWindowPpq = juce::jlimit (0.01, 0.25, onsetWindowSamples * ppqPerSample);
     const double cutoff = (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
+    const bool doLog = decisionLogParam != nullptr && decisionLogParam->load() >= 0.5f;
 
     auto emitSampleFor = [&] (double ppq)
     {
@@ -612,8 +632,60 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             }
             planLastOnsetPpq = gp;
 
+            // Figuration: if not already inside a figure, probe for a tremolo /
+            // repeated-note run starting here.
+            if (gp >= figureEndPpq - 1.0e-6)
+            {
+                std::vector<std::vector<int>> gN;
+                std::vector<double> gO;
+                double curPpq = -1.0e18;
+                for (const auto& e : planBuf)
+                {
+                    if (! e.msg.isNoteOn())
+                        continue;
+                    if (e.ppq - curPpq > onsetWindowPpq)
+                    {
+                        if (gN.size() >= 20) break;
+                        gN.emplace_back();
+                        gO.push_back (e.ppq);
+                        curPpq = e.ppq;
+                    }
+                    gN.back().push_back (e.msg.getNoteNumber());
+                }
+                for (auto& g : gN) { std::sort (g.begin(), g.end()); g.erase (std::unique (g.begin(), g.end()), g.end()); }
+
+                constexpr double kMaxFigIntervalBeats = 0.4;   // 16ths / 32nds
+                const auto fig = ocpn::detectFigure (gN, gO, kMaxFigIntervalBeats, 4);
+                if (fig.type != ocpn::FigureType::None)
+                {
+                    figureEndPpq    = gp + fig.spanBeats;
+                    figSetA         = gN[0];
+                    figSetB         = (fig.type == ocpn::FigureType::Tremolo && gN.size() > 1) ? gN[1] : gN[0];
+                    figGroupsToEmit = (fig.type == ocpn::FigureType::Tremolo) ? 2 : 1;
+                    if (doLog)
+                    {
+                        auto setStr = [] (const std::vector<int>& s)
+                        {
+                            juce::String r;
+                            for (int p : s) r << (r.isEmpty() ? "" : "+") << juce::MidiMessage::getMidiNoteName (p, true, true, 3);
+                            return r;
+                        };
+                        logEvent (gp, juce::String (fig.type == ocpn::FigureType::Tremolo ? "tremolo  " : "repeated ")
+                                      + setStr (figSetA)
+                                      + (fig.type == ocpn::FigureType::Tremolo ? (" ~ " + setStr (figSetB)) : juce::String())
+                                      + "  (" + juce::String (fig.groups) + " hits, "
+                                      + juce::String (fig.spanBeats, 1) + " beats) -> held");
+                    }
+                }
+                else
+                {
+                    figureEndPpq = -1.0e18;
+                }
+            }
+
             // Onset group: the leading run of note-ons within one onset window.
             std::vector<HeldOn> group;
+            std::vector<int> pset;
             size_t n = 0;
             while (n < planBuf.size()
                    && planBuf[n].msg.isNoteOn()
@@ -635,16 +707,42 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                     }
                 }
                 group.push_back ({ m.getChannel(), m.getNoteNumber(), m.getVelocity(), 0, durTicks });
+                pset.push_back (m.getNoteNumber());
                 ++n;
             }
+            std::sort (pset.begin(), pset.end());
+            pset.erase (std::unique (pset.begin(), pset.end()), pset.end());
 
-            reduceGroup (group, planPhraseSplit, emitSampleFor (gp), gp, output);
-            planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n));
+            const bool inFigure = gp < figureEndPpq - 1.0e-6;
+            const bool isFigGroup = inFigure && (pset == figSetA || pset == figSetB);
+
+            if (isFigGroup && figGroupsToEmit <= 0)
+            {
+                planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n)); // a repeat - consumed
+            }
+            else
+            {
+                double releasePpq = 0.0;
+                if (isFigGroup) { releasePpq = figureEndPpq; --figGroupsToEmit; }
+                reduceGroup (group, planPhraseSplit, emitSampleFor (gp), gp, output, releasePpq);
+                planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n));
+            }
         }
         else if (front.msg.isNoteOff())
         {
-            handleNoteOff (front.msg, emitSampleFor (front.ppq), output);
-            planBuf.erase (planBuf.begin());
+            const int offNote = front.msg.getNoteNumber();
+            const bool figOff = front.ppq < figureEndPpq - 1.0e-6
+                && (std::find (figSetA.begin(), figSetA.end(), offNote) != figSetA.end()
+                 || std::find (figSetB.begin(), figSetB.end(), offNote) != figSetB.end());
+            if (figOff)
+            {
+                planBuf.erase (planBuf.begin());   // the figure holds this note
+            }
+            else
+            {
+                handleNoteOff (front.msg, emitSampleFor (front.ppq), output);
+                planBuf.erase (planBuf.begin());
+            }
         }
         else
         {
@@ -692,6 +790,43 @@ void OrchPianoAudioProcessor::drainRestrikes (juce::MidiBuffer& output, double b
             it = pendingRestrikes.erase (it);
         else
             ++it;
+    }
+}
+
+void OrchPianoAudioProcessor::drainHardOffs (juce::MidiBuffer& output, double blockStartPpq,
+                                             double lookaheadPpq, double ppqPerSample, int numSamples)
+{
+    if (pendingHardOffs.empty() || ppqPerSample <= 0.0)
+        return;
+
+    const double cutoff = (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
+
+    for (auto it = pendingHardOffs.begin(); it != pendingHardOffs.end();)
+    {
+        if (it->ppq > cutoff)
+        {
+            ++it;
+            continue;
+        }
+
+        const int s = juce::jlimit (0, juce::jmax (0, numSamples - 1),
+            juce::roundToInt ((it->ppq + lookaheadPpq - blockStartPpq) / ppqPerSample));
+
+        for (auto a = activeNotes.begin(); a != activeNotes.end();)
+        {
+            if (a->outputNote == it->pitch && a->outputChannel == it->outCh)
+            {
+                output.addEvent (juce::MidiMessage::noteOff (it->outCh, it->pitch), s);
+                a = activeNotes.erase (a);
+            }
+            else
+                ++a;
+        }
+        // stop re-striking this note too
+        pendingRestrikes.erase (std::remove_if (pendingRestrikes.begin(), pendingRestrikes.end(),
+            [&] (const PendingRestrike& r) { return r.pitch == it->pitch && r.outCh == it->outCh; }),
+            pendingRestrikes.end());
+        it = pendingHardOffs.erase (it);
     }
 }
 
@@ -750,6 +885,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         // last real note; P5d (OrchCapture time-offset) will let it drain cleanly.
         planBuf.clear();
     pendingRestrikes.clear();
+    resetFigureState();
         planBufCount.store (0);
         dampAllRinging (output, 0);
         activeNotes.clear();
@@ -766,6 +902,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         prevKeptNotes.clear();
         planBuf.clear();
     pendingRestrikes.clear();
+    resetFigureState();
         planPhraseSplit = -1;
         planLastOnsetPpq = -1.0e18;
         resetVoiceLines();
@@ -779,6 +916,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     {
         planBuf.clear();
     pendingRestrikes.clear();
+    resetFigureState();
         planPhraseSplit = -1;
         planLastOnsetPpq = -1.0e18;
         dampAllRinging (output, 0);
@@ -803,6 +941,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             currentGroup.clear();
             planBuf.clear();
     pendingRestrikes.clear();
+    resetFigureState();
             dampAllRinging (output, samplePosition);
             activeNotes.clear();
             output.addEvent (message, samplePosition);
@@ -845,6 +984,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
     {
         const int maxRing = maxRingBeatsParam != nullptr ? juce::roundToInt (maxRingBeatsParam->load()) : 0;
         flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples);
+        drainHardOffs (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples);
         drainRestrikes (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, maxRing);
     }
     else if (! currentGroup.empty())

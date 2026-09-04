@@ -319,6 +319,37 @@ int main()
                    { 0, 0 }), "streamHandVoices: 2 similar-length notes, line 1 idle -> one voice");
     }
 
+    // --- Phase 5c-2: figuration recognition ---------------------
+    {
+        // An octave tremolo: {60}, {72}, {60}, {72}, {60}, {72} at a steady 1/8.
+        std::vector<std::vector<int>> trem { {60}, {72}, {60}, {72}, {60}, {72} };
+        std::vector<double> tro { 0.0, 0.5, 1.0, 1.5, 2.0, 2.5 };
+        const auto f1 = detectFigure (trem, tro, 0.6, 4);
+        check (f1.type == FigureType::Tremolo, "detectFigure: octave alternation -> Tremolo");
+        checkInt (f1.groups, 6, "detectFigure: spans all 6 hits");
+
+        // A repeated note.
+        std::vector<std::vector<int>> rep { {64}, {64}, {64}, {64}, {64} };
+        std::vector<double> rpo { 0.0, 0.25, 0.5, 0.75, 1.0 };
+        check (detectFigure (rep, rpo, 0.4, 4).type == FigureType::RepeatedNote,
+               "detectFigure: same note repeated -> RepeatedNote");
+
+        // Too slow -> not a figure.
+        std::vector<std::vector<int>> slow { {60}, {72}, {60}, {72} };
+        std::vector<double> slo { 0.0, 1.0, 2.0, 3.0 };
+        check (detectFigure (slow, slo, 0.4, 4).type == FigureType::None,
+               "detectFigure: 1-beat spacing is too slow for a figure");
+
+        // Not enough hits.
+        check (detectFigure ({ {60}, {72}, {60} }, { 0.0, 0.25, 0.5 }, 0.4, 4).type == FigureType::None,
+               "detectFigure: 3 hits is below minGroups 4");
+
+        // Pattern breaks -> run stops where it broke (still counts if >= minGroups).
+        std::vector<std::vector<int>> brk { {60}, {72}, {60}, {72}, {65}, {72} };
+        std::vector<double> bro { 0.0, 0.25, 0.5, 0.75, 1.0, 1.25 };
+        checkInt (detectFigure (brk, bro, 0.4, 4).groups, 4, "detectFigure: run stops at the first mismatch");
+    }
+
     // --- Phase 5a: adaptive hand split (KDE) ---------------------
     {
         // Too little data -> return the prior untouched.

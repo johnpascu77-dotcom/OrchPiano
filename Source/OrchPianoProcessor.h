@@ -118,6 +118,17 @@ private:
     };
     std::vector<PendingRestrike> pendingRestrikes;
 
+    // ---- Phase 5c-2: figuration (tremolo / repeated note) collapse ----
+    // A detected figure is emitted as its first 1-2 chords held to `figureEndPpq`
+    // (re-struck by maxRingBeats); the repeats are consumed. The held notes have
+    // no buffered note-off (it is consumed too), so a hard-off releases them.
+    double figureEndPpq = -1.0e18;
+    std::vector<int> figSetA, figSetB;      // sorted pitch lists
+    int figGroupsToEmit = 0;
+    struct PendingHardOff { int outCh = 0, pitch = 0; double ppq = 0.0; };
+    std::vector<PendingHardOff> pendingHardOffs;
+    void resetFigureState();
+
     // ---- open onset group (streaming engine) ----
     struct HeldOn
     {
@@ -171,11 +182,14 @@ private:
     void resetNoteMap();
     void flushGroup (juce::MidiBuffer& output, int flushSample, double blockStartPpq, double ppqPerSample);
     void reduceGroup (const std::vector<HeldOn>& group, int splitNote,
-                      int emitSample, double groupPpq, juce::MidiBuffer& output);
+                      int emitSample, double groupPpq, juce::MidiBuffer& output,
+                      double figureReleasePpq = 0.0);
     void flushPlanBuffer (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
                           double ppqPerSample, int numSamples, int onsetWindowSamples);
     void drainRestrikes (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
                          double ppqPerSample, int numSamples, int maxRingBeats);
+    void drainHardOffs (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
+                        double ppqPerSample, int numSamples);
     void dampAllRinging (juce::MidiBuffer& output, int sample);
     void handleNoteOff (const juce::MidiMessage& message, int sample, juce::MidiBuffer& output);
     void logEvent (double ppq, const juce::String& text);

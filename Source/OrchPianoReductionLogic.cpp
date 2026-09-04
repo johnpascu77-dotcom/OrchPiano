@@ -707,4 +707,43 @@ namespace ocpn
         }
         return best;
     }
+
+    FigureMatch detectFigure (const std::vector<std::vector<int>>& groupNotes,
+                              const std::vector<double>& onsets,
+                              double maxIntervalBeats,
+                              int minGroups)
+    {
+        FigureMatch m;
+        const int n = static_cast<int> (groupNotes.size());
+        if (n < std::max (3, minGroups) || static_cast<int> (onsets.size()) != n)
+            return m;
+        if (groupNotes[0].empty())
+            return m;
+
+        const double iv0 = onsets[1] - onsets[0];
+        if (iv0 <= 1.0e-6 || iv0 > maxIntervalBeats)
+            return m;
+
+        const auto& A = groupNotes[0];
+        const auto& B = groupNotes[1];
+
+        int run = 2;
+        for (int i = 2; i < n; ++i)
+        {
+            const double iv = onsets[static_cast<size_t> (i)] - onsets[static_cast<size_t> (i - 1)];
+            if (iv <= 1.0e-6 || std::abs (iv - iv0) > 0.35 * iv0)
+                break;
+            if (groupNotes[static_cast<size_t> (i)] != ((i % 2 == 0) ? A : B))
+                break;
+            ++run;
+        }
+
+        if (run < minGroups)
+            return m;
+
+        m.groups    = run;
+        m.spanBeats = (onsets[static_cast<size_t> (run - 1)] - onsets[0]) + iv0;
+        m.type      = (A == B) ? FigureType::RepeatedNote : FigureType::Tremolo;
+        return m;
+    }
 }

@@ -171,6 +171,32 @@ namespace ocpn
                                        bool secondaryActive,
                                        bool leadIsTop);
 
+    // ---- Phase 5c-2: figuration recognition ---------------------------
+    //
+    // A measured tremolo or a fast repeated note comes in as many small onset
+    // groups; notated it is two notes/chords with a tremolo beam, or one note.
+    // Detect the pattern over a run of upcoming groups so the planning engine
+    // can collapse it to held notes + a marker.
+
+    enum class FigureType { None = 0, Tremolo, RepeatedNote };
+
+    struct FigureMatch
+    {
+        FigureType type = FigureType::None;
+        int    groups    = 0;     // onset groups the run spans
+        double spanBeats = 0.0;   // total musical duration of the run
+    };
+
+    // `groupNotes` = a sequence of ascending, de-duplicated pitch lists;
+    // `onsets` = their positions (beats), parallel. Detects whether a figure
+    // starts at index 0: a run of >= `minGroups` groups at a regular interval
+    // <= `maxIntervalBeats`, alternating between two pitch sets A (even) and B
+    // (odd). A == B -> RepeatedNote, else Tremolo.
+    FigureMatch detectFigure (const std::vector<std::vector<int>>& groupNotes,
+                              const std::vector<double>& onsets,
+                              double maxIntervalBeats,
+                              int minGroups);
+
     // Estimate 0..1 how hard an n-note chord spanning `spanSemis` is for one
     // hand (streaming proxy: count + span; the planning engine adds a
     // hand-transition term).

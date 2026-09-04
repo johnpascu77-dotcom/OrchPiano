@@ -13,7 +13,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     titleLabel.setFont (juce::Font (juce::FontOptions (20.0f, juce::Font::bold)));
     addAndMakeVisible (titleLabel);
 
-    buildLabel.setText ("Build: Phase 5c-1 (maxRingBeats held-note cut; planning output delayed)", juce::dontSendNotification);
+    buildLabel.setText ("Build: Phase 5c-2 (tremolo/repeated-note collapse; planning output delayed)", juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
     addAndMakeVisible (buildLabel);
