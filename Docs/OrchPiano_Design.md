@@ -24,11 +24,11 @@ cmake --build build --config Release --target OrchPianoReductionLogicCheck
 ```
                  ┌───────────────────────────────────────────────┐
    MIDI in  ───▶ │  OrchPianoAudioProcessor                       │ ───▶ MIDI out
- (Direct, or     │                                               │      ch 1-4 notation
-  OrchCapture    │  ┌─────────────┐      ┌──────────────────┐     │      ch 5-8 performance
-  merged tap)    │  │ streaming   │  or  │ planning engine  │     │        (optional)
-                 │  │ engine      │      │ (lookahead buf + │     │
-                 │  │ (greedy,    │      │  multi-pass)     │     │
+ (Direct - a     │                                               │      ch 1-4 notation
+  track or a     │  ┌─────────────┐      ┌──────────────────┐     │      ch 5-8 performance
+  Bitwig merge   │  │ streaming   │  or  │ planning engine  │     │        (optional)
+  bus, §6.2)     │  │ engine      │      │ (lookahead buf + │     │      + delay-comp CC
+                 │  │ (greedy,    │      │  multi-pass)     │     │        → OrchCapture
                  │  │  live)      │      └──────────────────┘     │
                  │  └─────────────┘             │                 │
                  │         └──────────┬─────────┘                 │
