@@ -377,6 +377,15 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
     std::vector<int> keptNotes, keptHands, keptForMotion;
     int emitted = 0, melodyOut = -1, bassOut = -1, droppedCount = 0;
 
+    // Shared across both hands (not reset per hand): each hand's own revoice
+    // pass only knows its own frame, so an L-hand note and an R-hand note can
+    // independently revoice onto the identical final pitch near the split
+    // boundary (crossoverSlack widens exactly this overlap zone). Tracking
+    // emitted pitches across the whole group, not just within one hand,
+    // catches that case the same way the existing within-hand check catches
+    // two inner voices collapsing onto one pitch.
+    std::vector<int> emittedPitchesThisGroup;
+
     for (int hand = 1; hand <= 2; ++hand)
     {
         if (handsMode == 1 && hand != 1) continue;
@@ -473,7 +482,6 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
         }
         // handVoices == 1: all voice 0 (default).
 
-        std::vector<int> emittedPitchesThisHand;
         int line0Emit = -1, line1Emit = -1;
         const size_t priorActiveCount = activeNotes.size();   // for per-channel damp
 
@@ -484,15 +492,18 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             const int pitch = keptOut[ki];
             const auto& src = byPitch[inPitch];
 
-            // Re-voice can collapse two inner notes onto one pitch - drop the dup.
-            if (std::find (emittedPitchesThisHand.begin(), emittedPitchesThisHand.end(), pitch)
-                != emittedPitchesThisHand.end())
+            // Re-voice can collapse two inner notes onto one pitch (within a
+            // hand) or two hands can independently revoice onto the same
+            // pitch near the split boundary (across hands) - drop the dup
+            // either way, whichever hand got there first keeps it.
+            if (std::find (emittedPitchesThisGroup.begin(), emittedPitchesThisGroup.end(), pitch)
+                != emittedPitchesThisGroup.end())
             {
                 activeNotes.push_back ({ src.channel, inPitch, -1, 0 });
                 if (doLog) logEvent (groupPpq, "revoice  " + nn (inPitch) + " folded onto " + nn (pitch));
                 continue;
             }
-            emittedPitchesThisHand.push_back (pitch);
+            emittedPitchesThisGroup.push_back (pitch);
 
             if (doLog && pitch != inPitch)
                 logEvent (groupPpq, "revoice  " + nn (inPitch) + " -> " + nn (pitch) + "   "
