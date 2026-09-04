@@ -704,16 +704,36 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 }
             }
 
-            // Onset group: the leading run of note-ons within one onset window.
+            // Onset group: every note-on within one onset window, wherever it
+            // sits in the buffer - NOT just a leading run. planBuf interleaves
+            // note-ons and note-offs from every source in arrival order (an
+            // orchestral merge has ~13+ independent senders), so an unrelated
+            // note ending at nearly the same instant can land between two
+            // note-ons that both belong to this same chord/unison. The old
+            // version stopped the scan dead at the first non-note-on it saw,
+            // silently truncating the group - the rest of a genuinely
+            // simultaneous chord then started a BRAND NEW group at nearly the
+            // identical ppq, re-emitting the same pitches a second time.
+            // Confirmed live: this was the actual cause of "duplicate unison
+            // notes", not OrchMerge relay jitter (which was a real, separate,
+            // smaller issue, already fixed there).
             std::vector<HeldOn> group;
             std::vector<int> pset;
+            std::vector<size_t> interleaved; // non-note-on entries within the window
             size_t n = 0;
             while (n < planBuf.size()
-                   && planBuf[n].msg.isNoteOn()
                    && planBuf[n].ppq - gp <= onsetWindowPpq
                    && group.size() < 24)               // no real piano onset is bigger
             {
                 const auto& m = planBuf[n].msg;
+
+                if (! m.isNoteOn())
+                {
+                    interleaved.push_back (n);
+                    ++n;
+                    continue;
+                }
+
                 // Duration: scan forward for this note's matching note-off.
                 int durTicks = 0;
                 for (size_t j = n + 1; j < planBuf.size(); ++j)
@@ -736,6 +756,19 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
 
             const bool inFigure = gp < figureEndPpq - 1.0e-6;
             const bool isFigGroup = inFigure && (pset == figSetA || pset == figSetB);
+
+            // Apply whatever interleaved (non-note-on) messages were skipped
+            // over, in their original order, before the chord they didn't
+            // belong to - same handling the outer loop would have given them
+            // as their own front() entries.
+            for (size_t idx : interleaved)
+            {
+                const auto& im = planBuf[idx].msg;
+                if (im.isNoteOff() || (im.isNoteOn() && im.getVelocity() == 0))
+                    handleNoteOff (im, emitSampleFor (planBuf[idx].ppq), output);
+                else
+                    output.addEvent (im, emitSampleFor (planBuf[idx].ppq));
+            }
 
             if (isFigGroup && figGroupsToEmit <= 0)
             {
