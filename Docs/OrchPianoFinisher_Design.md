@@ -1,9 +1,12 @@
-# OrchPiano Finisher — scoping (Phase 1 built)
+# OrchPiano Finisher — scoping (Phase 1 + 2 built)
 
-Status: **Phase 1 (merge only) BUILT, validated, and A/B'd against Dorico's own Reduce
-2026-09-05** - decisively better (see §9). `Tools/finisher/orchpiano_finisher.py`. Name
-and location (§5, §7) both confirmed: stays "Finisher", stays in this repo at
-`Tools/finisher/`. Phase 2 (safety net) next; Phases 3-4 not started (§6).
+Status: **Phase 1 (merge) BUILT + A/B'd 2026-09-05** - decisively better than Dorico's own
+Reduce (§9). **Phase 2 (real-time hand-playability safety net) BUILT + validated
+2026-09-05** (§10) — closes the scope gap §9's investigation surfaced: OrchPiano's own
+per-onset-group span/count check can't see cross-attack sustain overlap; this tool now
+enforces it directly against real note timing. `Tools/finisher/orchpiano_finisher.py`.
+Name and location (§5, §7) both confirmed: stays "Finisher", stays in this repo at
+`Tools/finisher/`. Phase 3 (dynamics) next; Phase 4 not started (§6).
 
 ## 1. The problem, precisely
 
@@ -127,7 +130,7 @@ not assuming it.
 | Phase | Scope | Verifies |
 |---|---|---|
 | **1 — merge only** | Parse 4ch MIDI, place onto 2-staff/2-voice model, write MusicXML with no dynamics yet. | Against Dorico's own Reduce output on the same file — is the voice-leading/layout actually better? This is the whole premise of the tool; confirm it before adding anything else. |
-| **2 — safety-net pass** | Same-voice-pair collision + boundary voice-crossing cleanup (§2). | Catches anything Phase 1's naive channel-to-voice mapping exposes that OrchPiano's own hand-scoped checks couldn't see. |
+| **2 — safety-net pass** ✅ BUILT 2026-09-05 | Real (not onset-group) cross-attack span/count enforcement per hand + flag-only cross-hand crossing report (§10) - broader than the original "same-voice-pair collision + boundary voice-crossing" framing, per the scope-gap finding in §9's investigation. | Independently re-swept all 3 real test files post-guard: zero span/count violations remain. Not yet re-imported to Dorico for a visual check of the corrected files. |
 | **3 — dynamics** | Velocity → bucketed `<dynamics>` markings with hysteresis (§3). | Markings land at musically sensible points, not one per chord; A/B against the passed-through CC11 to confirm the velocity-derived version is actually more coherent, not just different. |
 | **4 — polish / CLI ergonomics** | Whatever Phase 1–3 testing on real takes shows is actually missing — deliberately not pre-specified. | Real use on real captures. |
 
@@ -224,3 +227,53 @@ rather than trusting a clean run:
   contains notes (seen literally in `Grand Piano_0.mid`: two tracks both named
   "Grand Piano", one empty) - `--track <name>` now prefers the one with note events instead
   of blindly taking the first name match.
+
+## 10. Phase 2 build notes — the real-time hand-playability safety net
+
+Built same day as the §9 investigation that found the scope gap. Two functions:
+
+- **`_guard_hand_playability(notes, max_span, max_notes)`** — the auto-fix half. Per hand
+  (both voice channels combined, since they sound on one physical hand), sweeps real note
+  timing (not the onset-group abstraction) and enforces span/count directly: when a new
+  attack would push what's *actually* sounding over either limit, the older conflicting
+  note is truncated to end at that attack - the same "favor the newer attack, shorten the
+  older sustain" rule `_guard_staggered_overlaps` already used for one voice line, now
+  applied across both of a hand's voices together. A span violation removes whichever
+  extreme (top or bottom) note shrinks the span more; a count-only violation removes the
+  oldest-started note.
+- **`_report_hand_crossing(notes, ticks_per_beat)`** — flag-only, deliberately never
+  auto-fixes. Reports total time the two hands' real sounding ranges cross (a LH note
+  above RH's lowest concurrent note) and the first few instances by beat position.
+  OrchPiano's own `crossoverSlack` already permits brief, legitimate crossing at the
+  hand-split boundary; judging whether a longer one found here is a genuine musical
+  gesture or a real problem needs a human ear, not a heuristic - this stays true to the
+  tool's "package the decision, don't re-decide it" principle from §2.
+
+`--max-hand-span`/`--max-hand-notes` (CLI, default 14 / 4 - OrchPiano's own defaults) are
+**assumptions about what OrchPiano was configured to for this take**, supplied by the
+caller, not read from the file - the captured MIDI carries no record of the plugin's own
+parameter state. Flagged plainly in the code, not hidden.
+
+**Validation, three ways** (not just "the script ran"):
+1. Independently re-swept all three real test files' output notes *after* the guard ran,
+   recomputing real per-hand span/count from scratch in a separate check script - zero
+   violations remained on any file.
+2. A synthetic test targeting the exact edge case that crashed the first draft: a
+   `StopIteration` when the brand-new note itself owns the pitch extreme pushing the span
+   over, so it can't be its own truncation victim (a candidate that isn't in the list of
+   removable *older* notes). Fixed by only comparing removal options the older notes can
+   actually satisfy, confirmed by the synthetic case and re-checked span (14, at the exact
+   limit) afterward.
+3. Full MusicXML re-parse on the corrected output still reconciles note/chord counts
+   against the source (within the same small tie-split margin as Phase 1's own
+   validation) - the guard only ever shortens durations, never adds or drops a pitch.
+
+**Real-world scale, not a rare edge case**: 44 notes truncated on `Grand Piano_0.mid`
+(605 notes, ~7%), 143+8 on `_0_post.mid` (~25%), 32+2 on the rig take. This is a
+substantial, real effect - strong evidence the scope-gap finding in §9 was the actual
+mechanism behind "impossible for two hands" results, not just a theoretical concern.
+
+**Not yet done**: re-importing a Phase-2-corrected file into Dorico for a visual/aural
+check that the truncations look musically sane (vs. just verified span/count-clean) -
+same kind of check §9 did for Phase 1's merge quality. Worth doing before calling Phase 2
+fully closed.
