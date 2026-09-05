@@ -7,9 +7,13 @@ investigation surfaced: OrchPiano's own per-onset-group span/count check can't s
 cross-attack sustain overlap; this tool now enforces it directly against real note timing.
 The Dorico visual pass also caught and fixed a real Phase-1 defect that had survived
 Phase 1's own note-count validation: `makeMeasures` alone can silently drop a note that
-outlasts its own measure (§11). `Tools/finisher/orchpiano_finisher.py`. Name and location
-(§5, §7) both confirmed: stays "Finisher", stays in this repo at `Tools/finisher/`.
-Phase 3 (dynamics) next; Phase 4 not started (§6).
+outlasts its own measure (§11). User's own review of that same Dorico pass caught a
+second, separate real problem - up-stem notes rendering below down-stem notes, "very
+often" - **fixed same-day, §12: `_fix_voice_stem_order`** swaps which onset-group gets
+which stem direction when they'd otherwise clash, a pure notation relabeling that never
+touches OrchPiano's own pitch/duration/hand decisions. `Tools/finisher/orchpiano_finisher.py`.
+Name and location (§5, §7) both confirmed: stays "Finisher", stays in this repo at
+`Tools/finisher/`. Phase 3 (dynamics) next; Phase 4 not started (§6).
 
 ## 1. The problem, precisely
 
@@ -337,3 +341,49 @@ remains genuinely unresolved - could be a different OrchCapture/OrchPiano intera
 these two files may simply not be as identical a pair as their names suggest. Needs a
 controlled, instrumented test (not more guessing) to actually diagnose - out of scope for
 today's Finisher work, flagged as a separate follow-up.
+
+## 12. Voice-1/voice-2 stem-direction swap — a real, frequent notation bug the user caught
+
+User reviewed the Dorico screenshots from the Phase 2 visual pass independently and
+spotted a recurring problem: up-stem (voice 1) notes were "very often" visually below
+down-stem (voice 2) notes - the same problem they'd been fixing by hand in Dorico
+("simply swapping the voices").
+
+**Root cause**: OrchPiano's `streamHandVoices()` picks the secondary voice (voice 2) by
+**continuity** - the non-lead note closest to that line's last pitch, or the longest-held
+one if neither line has ringing history (`OrchPianoReductionLogic.cpp`) - never by
+register. Voice 1 is simply "everything streamHandVoices() didn't peel off." Nothing in
+that logic guarantees voice 1 sounds higher than voice 2 at a given attack - it very
+often doesn't. Every notation program (Dorico included) still renders stems by voice
+number regardless of actual pitch (up for voice 1, down for voice 2, by convention), so a
+mismatch here reliably produces the visual mess reported.
+
+**Fix, `_fix_voice_stem_order` (`ee73521`)**: for each hand, wherever voice 1 and voice 2
+share an *identical* onset tick (the case that clashes most visibly - two different
+attacks at the same instant), compare their average pitch and swap which one is labeled
+voice 1 (up-stem) vs voice 2 (down-stem) if the down-stem one would otherwise average
+higher. This is purely a notation relabeling - same pitches, same durations, same "this
+is an independent continuing line" grouping OrchPiano already decided - so it stays
+inside the tool's "package the decision, don't re-decide it" scope (§2) the same way the
+Phase 2 safety net does.
+
+**Documented limitation, not silently glossed over**: this is a heuristic (average-pitch
+comparison at matching onsets), not a full crossing-eliminator. A wide chord in one voice
+against a single note in the other can still show *residual* crossing after the swap -
+confirmed directly on real data: a `[71, 84]` chord swapped against a single `80` note
+put the higher-*average* group on top, but the chord's own top note (84) still sits above
+the single note (80) post-swap. Fully resolving that would mean re-splitting which
+pitches belong to which voice - a real re-decision of OrchPiano's content, out of scope
+here. Non-simultaneous (staggered) crossing - one voice sustaining while the other
+attacks at a different tick - isn't handled at all by this pass; only matching-onset
+attacks are.
+
+**Validated three ways**: (1) a synthetic single-note-vs-single-note case, which the fix
+*fully* resolves (asserted directly - after the swap, voice 1 has the single high note,
+voice 2 has the low chord, no ambiguity); (2) real-file testing across all three test
+files - 21, 21, and 40 swaps respectively, confirming this was a frequent effect, not a
+rare one, matching "very often"; (3) direct `music21` `Voice`-container inspection
+before/after on real data (not a screenshot) at the exact bug location - voice 1's content
+at that onset demonstrably moved from a lower-averaging group `[71, 84]` (avg 77.5) to a
+higher one `[80]` (avg 80), with voice 2 taking the swapped-out chord. Structural note
+counts re-verified unchanged on all three files after the fix.
