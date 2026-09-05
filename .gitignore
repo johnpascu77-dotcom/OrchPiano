@@ -13,3 +13,7 @@ out/
 
 # OS metadata
 .DS_Store
+
+# Tools/finisher (Python) scratch/output
+Tools/finisher/__pycache__/
+Tools/finisher/*.musicxml

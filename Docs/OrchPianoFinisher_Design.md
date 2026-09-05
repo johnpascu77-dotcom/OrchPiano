@@ -1,7 +1,9 @@
-# OrchPiano Finisher — scoping (proposed, not yet built)
+# OrchPiano Finisher — scoping (Phase 1 built)
 
-Status: **SCOPING ONLY**, 2026-09-05. No code written. Working name "Finisher" —
-open question, see §7.
+Status: **Phase 1 (merge only) BUILT and validated 2026-09-05** against three real
+captures - `Tools/finisher/orchpiano_finisher.py`. Name and location (§5, §7) both
+confirmed: stays "Finisher", stays in this repo at `Tools/finisher/`. Phases 2-4 still
+not started (§6).
 
 ## 1. The problem, precisely
 
@@ -133,15 +135,56 @@ Each phase tested against the actual `Grand Piano_0.mid` / `_0_post.mid` files a
 `C:\Users\Asus\Documents\Orch_Capture MIDI` — same "parse the real MIDI, don't guess from
 a screenshot" discipline that found both real OrchPiano bugs this session.
 
-## 7. Open questions for the next session
+## 7. Open questions
 
-- Working name — "Finisher" is a placeholder used throughout this doc, not a proposal.
-- §5's repo-location call — confirm or override.
-- §3's velocity-vs-CC11 recommendation — confirm before Phase 3, since it's the one
-  design choice here that isn't a straightforward "do what OrchPiano already decided."
-- Does `music21` need to be added as a dependency somewhere tracked (a `requirements.txt`
-  in `Tools/finisher/`), or is an ad-hoc environment fine for a personal tool?
+- ~~Working name~~ — confirmed "Finisher", 2026-09-05.
+- ~~§5's repo-location call~~ — confirmed `Tools/finisher/` in this repo, 2026-09-05.
+- ~~Does `music21` need a tracked dependency file?~~ — yes, added `Tools/finisher/requirements.txt`
+  (`mido`, `music21`) — cheap, and both were ad-hoc-installed in this environment already.
+- §3's velocity-vs-CC11 recommendation — still open, confirm before Phase 3. Also now
+  complicated by the 2026-09-05 "smart CC processor" idea (note-gated CC sampling +
+  per-instrument velocity blend) recorded in memory
+  (`project_orchpiano_finisher_concept.md`) — needs its own design pass before Phase 3
+  starts, not a simple velocity-vs-CC11 binary anymore.
 - Should Phase 1's "is it actually better than Dorico's Reduce" check be eyeball-only, or
   worth a rough objective metric (OrchPiano_ReductionRules.md §14.4 already has a
   pitch-class-histogram-similarity metric defined for a different comparison — reusable
-  here as a sanity check, not required)?
+  here as a sanity check, not required)? Still open — Phase 1 was validated for structural
+  correctness (note/chord counts reconcile against the source MIDI) but not yet A/B'd
+  against Dorico's own Reduce on the same file.
+
+## 8. Phase 1 build notes (what real data caught that the design didn't anticipate)
+
+Validated against three real captures: today's full-orchestra rig take
+(`OrchCapture_session_20260905_122551.mid`, 424 notes, dense - a good stress test) and the
+existing `Grand Piano_0.mid` / `_0_post.mid` pair. Two things the design above didn't
+anticipate, both found by checking actual output against hand-derived expected counts
+rather than trusting a clean run:
+
+- **The lead voice (voice 1) is not monophonic - a naive "does this note overlap the
+  previous one on this channel" check is wrong.** `streamHandVoices()` only ever peels ONE
+  note per hand onto the secondary voice; everything else - which can be a 2-4 note chord -
+  stays on the lead voice on one channel. An early version of this script treated any
+  time-overlap within one channel as an error and truncated it, which silently corrupted
+  every real chord's interior notes (42 of ch0's 146 notes and 31 of ch3's 103 notes in the
+  rig take were same-onset chord members, not overlaps). Fixed by grouping notes into
+  onset-groups (exact shared start tick) FIRST, emitting a `music21.chord.Chord` for any
+  group with >1 pitch, and only running the overlap guard BETWEEN onset-groups on the same
+  line (20 genuine staggered overlaps in the rig take, all correctly distinct from the 73
+  same-onset chords). Caught by reconciling final note/chord counts against an independent
+  channel-by-channel tick analysis, not by the script running without errors.
+- **Two `PartStaff` + a braced `StaffGroup` is the wrong MusicXML shape for a piano grand
+  staff** (that pattern is for joining separate instruments, e.g. two different players).
+  music21's exporter itself recognizes the pattern and correctly collapses it to what
+  Dorico/Sibelius actually expect: **one `<score-part>` with `<staves>2</staves>`**, notes
+  tagged `<staff>1</staff>`/`<staff>2</staff>`. Looked like a bug at first (only one
+  `<score-part>` in the output) until checked against the MusicXML spec - it's the correct,
+  more idiomatic representation, not a regression.
+- Real captured timing isn't grid-aligned; MusicXML can't express arbitrary-fraction
+  durations, so each staff is quantized (`Stream.quantize`, default 16th-note/8th-triplet
+  grid) before `makeMeasures` - a display step, confirmed to not touch pitch/hand/voice
+  assignment.
+- A capture can have more than one track sharing the same name where only one actually
+  contains notes (seen literally in `Grand Piano_0.mid`: two tracks both named
+  "Grand Piano", one empty) - `--track <name>` now prefers the one with note events instead
+  of blindly taking the first name match.
