@@ -1,12 +1,15 @@
 # OrchPiano Finisher — scoping (Phase 1 + 2 built)
 
 Status: **Phase 1 (merge) BUILT + A/B'd 2026-09-05** - decisively better than Dorico's own
-Reduce (§9). **Phase 2 (real-time hand-playability safety net) BUILT + validated
-2026-09-05** (§10) — closes the scope gap §9's investigation surfaced: OrchPiano's own
-per-onset-group span/count check can't see cross-attack sustain overlap; this tool now
-enforces it directly against real note timing. `Tools/finisher/orchpiano_finisher.py`.
-Name and location (§5, §7) both confirmed: stays "Finisher", stays in this repo at
-`Tools/finisher/`. Phase 3 (dynamics) next; Phase 4 not started (§6).
+Reduce (§9). **Phase 2 (real-time hand-playability safety net) BUILT + validated +
+visually confirmed in Dorico 2026-09-05** (§10, §11) — closes the scope gap §9's
+investigation surfaced: OrchPiano's own per-onset-group span/count check can't see
+cross-attack sustain overlap; this tool now enforces it directly against real note timing.
+The Dorico visual pass also caught and fixed a real Phase-1 defect that had survived
+Phase 1's own note-count validation: `makeMeasures` alone can silently drop a note that
+outlasts its own measure (§11). `Tools/finisher/orchpiano_finisher.py`. Name and location
+(§5, §7) both confirmed: stays "Finisher", stays in this repo at `Tools/finisher/`.
+Phase 3 (dynamics) next; Phase 4 not started (§6).
 
 ## 1. The problem, precisely
 
@@ -273,7 +276,64 @@ parameter state. Flagged plainly in the code, not hidden.
 substantial, real effect - strong evidence the scope-gap finding in §9 was the actual
 mechanism behind "impossible for two hands" results, not just a theoretical concern.
 
-**Not yet done**: re-importing a Phase-2-corrected file into Dorico for a visual/aural
-check that the truncations look musically sane (vs. just verified span/count-clean) -
-same kind of check §9 did for Phase 1's merge quality. Worth doing before calling Phase 2
-fully closed.
+**Done, see §11**: re-imported a Phase-2-corrected file into Dorico for a visual/aural
+check that the truncations look musically sane (vs. just verified span/count-clean) - same
+kind of check §9 did for Phase 1's merge quality. Found and fixed a real Phase-1 defect
+along the way.
+
+## 11. Phase 2 visual check in Dorico — found and fixed a real Phase-1 defect
+
+Regenerated `Grand Piano_0.mid`'s corrected output, imported to Dorico (Galley view -
+easier to navigate by bar than Page view, whose scroll can appear to stop at a page
+boundary). Two kinds of truncation to check: the common case (44 small 0.25-0.75 beat
+shortenings) and one dramatic outlier (an 11.25-beat source anomaly, truncated to 4.5
+beats - see the note-duration investigation below).
+
+**Common case**: bar 4's cluster of four ~0.5-beat truncations renders as a completely
+ordinary eighth-note melodic line over a tied bass chord - no visible artifact of any
+kind. The safety net's most frequent behavior is invisible at the notation level, exactly
+as hoped.
+
+**The dramatic case surfaced a real bug**: clicking the truncated note in Dorico and
+reading its own duration wasn't reliable (a long note crossing barlines splits into tied
+fragments in notation, so one fragment's short real-time duration doesn't tell you the
+total). Verified with the more rigorous method this whole ecosystem already favors -
+parsing the actual MusicXML with `music21`, not eyeballing a screenshot - and found the
+note **missing entirely** from the exported file, despite existing correctly (offset=59.5,
+duration=4.5) right after `build_score()` returned, confirmed by inspecting the in-memory
+score object at each pipeline stage rather than guessing. Root cause: `Stream.makeMeasures()`
+alone does not split a note that outlasts its own measure into tied fragments - it left the
+full 4.5-beat duration sitting in the measure where it starts (which is invalid: longer
+than the measure's own length), and the MusicXML writer silently mishandled it from there.
+**Fix**: `p.makeTies(inPlace=True)` right after `makeMeasures` - confirmed by direct
+before/after inspection that the note now splits correctly (0.5-beat fragment tied to a
+4.0-beat fragment, totaling 4.5) and, imported into Dorico, renders as exactly that: a tied
+half note into a whole note filling the next measure - clean, correct, idiomatic notation
+for a genuinely long sustained note.
+
+**Real bug hiding behind a passing check**: this was a genuine Phase-1 defect (in
+`build_score`, not Phase 2's own new code), present since Phase 1 shipped, that survived
+Phase 1's own note-count validation - the aggregate count (613 vs. 605 expected) happened
+to reconcile anyway, because losing this one note and gaining an unrelated tie-split
+fragment elsewhere netted the same total. **Lesson**: aggregate note-count reconciliation
+is necessary but not sufficient - it can mask "lost one note, gained a different one"
+exactly like this. A long-duration, multi-barline-crossing note is now a standing thing to
+spot-check specifically after any future change to `build_score`, not just the aggregate
+count.
+
+**Separately investigated, NOT resolved, flagged for follow-up (not a Finisher bug)**:
+the 11.25-beat anomaly itself - and a similar, more extreme 16.5-beat one found in
+`Grand Piano_0_post.mid` at the exact same source pitch/tick that is a normal 0.25-beat
+note in the non-"_post" file - both traced back to genuine, real note-on/note-off pairs in
+the captured MIDI (confirmed directly, ruled out a pairing bug in this tool's own
+`extract_notes`). Read through `OrchCaptureProcessor.cpp`'s `lookaheadCompensationCc`
+handling as the leading hypothesis (the "_post" suffix implies delay-compensated output,
+and this is OrchCapture's newest, least-tested feature per
+[[project_orchpiano_concept]]/[[project_orchmerge_concept]] history) - but the actual
+compensation math (`ppqOn`/`ppqOff` both subtract the same live `capturedDelayBeats` value
+at note-off time) should cancel out and preserve duration regardless of when that value
+changes, so this specific mechanism does NOT obviously explain the anomaly. Root cause
+remains genuinely unresolved - could be a different OrchCapture/OrchPiano interaction, or
+these two files may simply not be as identical a pair as their names suggest. Needs a
+controlled, instrumented test (not more guessing) to actually diagnose - out of scope for
+today's Finisher work, flagged as a separate follow-up.
