@@ -1,9 +1,9 @@
 # OrchPiano Finisher — scoping (Phase 1 built)
 
-Status: **Phase 1 (merge only) BUILT and validated 2026-09-05** against three real
-captures - `Tools/finisher/orchpiano_finisher.py`. Name and location (§5, §7) both
-confirmed: stays "Finisher", stays in this repo at `Tools/finisher/`. Phases 2-4 still
-not started (§6).
+Status: **Phase 1 (merge only) BUILT, validated, and A/B'd against Dorico's own Reduce
+2026-09-05** - decisively better (see §9). `Tools/finisher/orchpiano_finisher.py`. Name
+and location (§5, §7) both confirmed: stays "Finisher", stays in this repo at
+`Tools/finisher/`. Phase 2 (safety net) next; Phases 3-4 not started (§6).
 
 ## 1. The problem, precisely
 
@@ -149,9 +149,45 @@ a screenshot" discipline that found both real OrchPiano bugs this session.
 - Should Phase 1's "is it actually better than Dorico's Reduce" check be eyeball-only, or
   worth a rough objective metric (OrchPiano_ReductionRules.md §14.4 already has a
   pitch-class-histogram-similarity metric defined for a different comparison — reusable
-  here as a sanity check, not required)? Still open — Phase 1 was validated for structural
-  correctness (note/chord counts reconcile against the source MIDI) but not yet A/B'd
-  against Dorico's own Reduce on the same file.
+  here as a sanity check, not required)? **Answered by eyeball 2026-09-05, see §9 — the
+  gap is large and obvious enough that a numeric metric isn't needed to see it.**
+
+## 9. A/B vs Dorico's own Reduce — done, 2026-09-05, decisive in the Finisher's favor
+
+Same source file both ways (`Grand Piano_0.mid`, 3 populated channels/605 notes — this
+file's 4th channel, LH secondary, happened to be silent for this take). Dorico's MIDI
+import auto-split the file's 3 channels into 3 separate single-line Piano instruments
+(605 notes total, matching this tool's own count exactly — cross-validates both import
+paths read the file identically). Added a 4th empty Piano player as the Reduce
+destination, selected all 3 source instruments' music, **Edit ▸ Paste Special ▸ Reduce**
+onto it (this is literally the "Write ▸ Reduce (Paste Special)" workflow named in §1 -
+confirmed it lives under Edit, not Write, in Dorico 6).
+
+**Dorico's Reduce result**: dense chromatic tone clusters - 5 to 7 simultaneous pitches
+with heavy accidental crowding - dumped almost entirely onto the TREBLE staff; the bass
+staff sat nearly empty (occasional rests, rare single notes). The piece's page count grew
+from 5 to 14 because the clusters needed far more horizontal space. This is a direct,
+reproduced instance of the original complaint ("no notion of which note belongs to which
+hand") - not a one-off, it held across every bar inspected on page 1.
+
+**This tool's Phase 1 result, same file**: real two-hand distribution - treble mostly
+light 1-2 note figures (matches OrchPiano's own already-decided lead/secondary split),
+bass carries genuine chords (typically 3-5 notes, tracking the "Notes/Hand" cap),
+including a correctly tied whole-bar-plus chord (a sustained bass chord notated as one
+event tied across the barline, not re-attacked). Held up consistently across the 6 bars
+inspected, not just the opening.
+
+**Conclusion**: the core premise holds up under direct comparison, decisively. No numeric
+metric needed - the difference is visually obvious at a glance. Proceed to Phase 2.
+
+Note for next session: mid-comparison, an attempt to change Dorico's own view zoom via its
+UI zoom-percentage field mis-clicked into the score canvas and typed digits, which Dorico's
+Note Input mode interpreted as rhythm/duration commands, inserting an unwanted note.
+Caught via Edit ▸ History (which shows each edit as a named, clickable step - reverting to
+a specific pre-mistake entry undid it cleanly) and confirmed via the project's unsaved-state
+Close-without-saving prompt before it could persist. No harm done, but: **prefer the
+screenshot tool's own zoom/crop action to inspect a Dorico score closely instead of changing
+Dorico's UI zoom control** - it can't accidentally land in the canvas.
 
 ## 8. Phase 1 build notes (what real data caught that the design didn't anticipate)
 
