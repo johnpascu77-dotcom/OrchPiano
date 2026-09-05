@@ -15,8 +15,11 @@
 // crossover dead zone), then reduces each hand by musical importance - drop
 // doublings first, then lowest-importance inner notes over the voice budget /
 // span / difficulty ceiling; melody and bass are never dropped. Emits four
-// Dorico voices on `outChannelBase .. +3` (RH up/down, LH up/down). Damps
-// still-ringing notes on the next attack. Writes a decision-log sidecar
+// Dorico voices on `outChannelBase .. +3` (RH up/down, LH up/down) - six when
+// "Max Voices" = 6 raises the per-hand line ceiling to 3, adding a second
+// inner voice per hand on `outChannelBase +4/+5` (appended, not renumbered,
+// so the original +0..+3 mapping never changes for anything downstream keyed
+// off it). Damps still-ringing notes on the next attack. Writes a decision-log sidecar
 // (%TEMP%/orchpiano-decisions-<tag>.log) on transport stop for supervisor review.
 //
 // Not yet built (see Docs/OrchPiano_Design.md): close-position re-voicing +
@@ -102,9 +105,11 @@ private:
     };
     std::vector<TrackedNote> activeNotes;
 
-    // ---- Phase 5b-2: per-line voice state (planning engine, per phrase) ----
+    // ---- Phase 5b-2/6: per-line voice state (planning engine, per phrase) --
+    // Index 2 (line 2) is only ever written when "Max Voices" = 6 raises the
+    // per-hand line ceiling to 3 - see ocpn::streamHandVoices.
     struct VoiceLineRT { int lastPitch = -1; double lastActivePpq = -1.0e18; };
-    VoiceLineRT rhLine[2], lhLine[2];
+    VoiceLineRT rhLine[3], lhLine[3];
     void resetVoiceLines();
 
     // ---- Phase 5c: maxRingBeats re-strike (planning engine) ----

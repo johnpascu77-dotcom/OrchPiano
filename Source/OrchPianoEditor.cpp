@@ -18,7 +18,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     // EVERY build (see GenerateBuildTimestamp.cmake) - unlike __DATE__/
     // __TIME__ baked into this one .cpp, it stays accurate even when an
     // incremental build only recompiled a different file for its own fix.
-    buildLabel.setText ("Build: Phase 5d (OrchCapture delay-compensation CC; planning output delayed)"
+    buildLabel.setText ("Build: Max Voices wired to a real 3rd per-hand line (was dead)"
                          "  |  compiled " ORCHPIANO_BUILD_TIMESTAMP, juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
@@ -44,7 +44,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addToggleRow ("dampSuccessive", "Damp On Next Attack");
     addToggleRow ("decisionLog", "Write Decision Log");
     addSliderRow ("onsetWindowMs", "Onset Window (ms)", 5, 200);
-    addSliderRow ("outChannelBase", "Out Channel Base (+0..+3)", 1, 13);
+    addSliderRow ("outChannelBase", "Out Channel Base (+0..+5)", 1, 11);
     addSliderRow ("wMelodyBass", "Weight: Melody/Bass", 0.0, 2.0);
     addSliderRow ("wVelocity", "Weight: Velocity", 0.0, 2.0);
     addSliderRow ("wDouble", "Weight: Doubling Penalty", 0.0, 2.0);

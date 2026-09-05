@@ -295,28 +295,56 @@ int main()
         check (eq (ps, { 0, 3, 5 }), "phraseStarts: boundaries at index 0 and after each >=1-beat gap");
     }
 
-    // --- Phase 5b-2: per-line voice streaming --------------------
+    // --- Phase 5b-2: per-line voice streaming (Phase 6: 3rd line) --------
     {
         // A block chord (uniform durations, line 1 idle) -> one voice.
-        check (eq (streamHandVoices ({ 60, 64, 67 }, { 100, 100, 100 }, -1, -1, false, true),
+        check (eq (streamHandVoices ({ 60, 64, 67 }, { 100, 100, 100 }, -1, -1, -1, false, false, true, 2),
                    { 0, 0, 0 }), "streamHandVoices: block chord -> all line 0");
 
         // A held note under a short one -> two voices; the held one is line 1.
-        check (eq (streamHandVoices ({ 55, 72 }, { 400, 80 }, -1, -1, false, true),
+        check (eq (streamHandVoices ({ 55, 72 }, { 400, 80 }, -1, -1, -1, false, false, true, 2),
                    { 1, 0 }), "streamHandVoices RH: held lower note -> line 1, moving top -> line 0");
-        check (eq (streamHandVoices ({ 48, 64 }, { 80, 400 }, -1, -1, false, false),
+        check (eq (streamHandVoices ({ 48, 64 }, { 80, 400 }, -1, -1, -1, false, false, false, 2),
                    { 0, 1 }), "streamHandVoices LH: bass (lead) -> line 0, held upper -> line 1");
 
         // Line 1 still sounding -> stay in two voices even for a lone note; it
         // continues whichever line it is nearer.
-        check (eq (streamHandVoices ({ 71 }, { 100 }, 72, 55, true, true),
+        check (eq (streamHandVoices ({ 71 }, { 100 }, 72, 55, -1, true, false, true, 2),
                    { 0 }), "streamHandVoices: lone note near line 0 -> line 0 while line 1 holds");
-        check (eq (streamHandVoices ({ 56 }, { 100 }, 72, 55, true, true),
+        check (eq (streamHandVoices ({ 56 }, { 100 }, 72, 55, -1, true, false, true, 2),
                    { 1 }), "streamHandVoices: lone note near line 1 -> line 1");
 
         // No held-note evidence and line 1 idle -> one voice even for a 2-note group.
-        check (eq (streamHandVoices ({ 60, 64 }, { 100, 110 }, -1, -1, false, true),
+        check (eq (streamHandVoices ({ 60, 64 }, { 100, 110 }, -1, -1, -1, false, false, true, 2),
                    { 0, 0 }), "streamHandVoices: 2 similar-length notes, line 1 idle -> one voice");
+
+        // maxLines == 2 (the "Max Voices" = 4 ceiling): even with tertiaryActive
+        // asking for a 3rd line, the cap refuses it - never returns 2.
+        check (eq (streamHandVoices ({ 48, 60, 72 }, { 400, 400, 80 }, -1, -1, -1, false, true, true, 2),
+                   { 1, 0, 0 }), "streamHandVoices: maxLines 2 never assigns line 2, even if asked");
+
+        // maxLines == 3 (the "Max Voices" = 6 ceiling), same input, same
+        // tertiaryActive=true: now line 2 is available and used - lead (top,
+        // short) -> 0, longest-held non-lead -> 1, the one left over -> 2.
+        check (eq (streamHandVoices ({ 48, 60, 72 }, { 400, 400, 80 }, -1, -1, -1, false, true, true, 3),
+                   { 1, 2, 0 }), "streamHandVoices: maxLines 3 with tertiaryActive uses all 3 lines");
+
+        // maxLines == 3 but the texture doesn't need a 3rd line: after lead +
+        // secondary are peeled off, the one remaining note is a lone leftover
+        // (no pair to show a held/short split) and line 2 isn't already
+        // ringing -> stays at 2 voices, ceiling not target.
+        check (eq (streamHandVoices ({ 40, 52, 64, 76 }, { 100, 105, 110, 80 }, -1, -1, -1, true, false, true, 3),
+                   { 0, 0, 1, 0 }), "streamHandVoices: maxLines 3, leftover pair has no held/short split -> line 2 unused");
+
+        // maxLines == 3, only 2 notes total: no room for a 3rd line regardless
+        // of the ceiling.
+        check (eq (streamHandVoices ({ 55, 72 }, { 400, 80 }, -1, -1, -1, false, true, true, 3),
+                   { 1, 0 }), "streamHandVoices: maxLines 3 with only 2 notes -> line 2 impossible");
+
+        // maxLines == 3, lone note nearest line 2's last pitch (both line 1 and
+        // line 2 already ringing) -> continues line 2.
+        check (eq (streamHandVoices ({ 40 }, { 100 }, 72, 55, 41, true, true, true, 3),
+                   { 2 }), "streamHandVoices: lone note nearest an already-ringing line 2 -> line 2");
     }
 
     // --- Phase 5c-2: figuration recognition ---------------------

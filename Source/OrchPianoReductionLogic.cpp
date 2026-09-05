@@ -410,68 +410,109 @@ namespace ocpn
                                        const std::vector<int>& handDurations,
                                        int line0LastPitch,
                                        int line1LastPitch,
+                                       int line2LastPitch,
                                        bool secondaryActive,
-                                       bool leadIsTop)
+                                       bool tertiaryActive,
+                                       bool leadIsTop,
+                                       int maxLines)
     {
         const int k = static_cast<int> (handNotes.size());
         std::vector<int> v (static_cast<size_t> (std::max (0, k)), 0);
         if (k == 0)
             return v;
 
-        // Does this group need a second voice?
-        bool two = secondaryActive;
-        if (k >= 2)
-        {
-            int mn = handDurations.empty() ? 0 : handDurations[0];
-            int mx = mn;
-            for (int d : handDurations) { mn = std::min (mn, d); mx = std::max (mx, d); }
-            if (mn > 0 && mx >= 2 * mn)
-                two = true;                       // a held note under a shorter one
-        }
+        maxLines = std::clamp (maxLines, 1, 3);
 
-        if (! two)
+        auto durOf = [&] (int i) {
+            return i < static_cast<int> (handDurations.size()) ? handDurations[static_cast<size_t> (i)] : 0;
+        };
+
+        // Does the given (still line-0) subset show a held-note-under-a-
+        // shorter-one pattern, or is its line already ringing?
+        auto needsAnotherLine = [&] (const std::vector<int>& idxs, bool activeFlag)
+        {
+            if (activeFlag) return true;
+            if (static_cast<int> (idxs.size()) < 2) return false;
+            int mn = durOf (idxs[0]), mx = mn;
+            for (int i : idxs) { mn = std::min (mn, durOf (i)); mx = std::max (mx, durOf (i)); }
+            return mn > 0 && mx >= 2 * mn;
+        };
+
+        // Pick the note (from candidates) closest to lastPitch; with no prior
+        // pitch to judge continuity by, the longest-held candidate instead.
+        auto pickVoiceNote = [&] (const std::vector<int>& candidates, int lastPitch)
+        {
+            int best = -1;
+            if (lastPitch >= 0)
+            {
+                int bestDist = 1 << 20;
+                for (int i : candidates)
+                {
+                    const int d = std::abs (handNotes[static_cast<size_t> (i)] - lastPitch);
+                    if (d < bestDist) { bestDist = d; best = i; }
+                }
+            }
+            else
+            {
+                int bestDur = -1;
+                for (int i : candidates) { const int d = durOf (i); if (d > bestDur) { bestDur = d; best = i; } }
+            }
+            return best;
+        };
+
+        std::vector<int> allIdx (static_cast<size_t> (k));
+        for (int i = 0; i < k; ++i) allIdx[static_cast<size_t> (i)] = i;
+        if (! needsAnotherLine (allIdx, secondaryActive))
             return v;                             // one voice, everything to line 0
 
         const int leadIdx = leadIsTop ? k - 1 : 0;
 
         if (k == 1)
         {
-            // The lone note continues whichever line it is closer to; the other
-            // line rests.
-            const int d0 = line0LastPitch >= 0 ? std::abs (handNotes[0] - line0LastPitch) : 1 << 20;
-            const int d1 = line1LastPitch >= 0 ? std::abs (handNotes[0] - line1LastPitch) : 1 << 20;
-            v[0] = (d1 < d0) ? 1 : 0;
+            // The lone note continues whichever already-active line it is
+            // closer to; ties (or no active alternate line) stay on line 0.
+            int bestLine = 0;
+            int bestDist = line0LastPitch >= 0 ? std::abs (handNotes[0] - line0LastPitch) : 1 << 20;
+            if (line1LastPitch >= 0)
+            {
+                const int d = std::abs (handNotes[0] - line1LastPitch);
+                if (d < bestDist) { bestDist = d; bestLine = 1; }
+            }
+            if (maxLines >= 3 && line2LastPitch >= 0)
+            {
+                const int d = std::abs (handNotes[0] - line2LastPitch);
+                if (d < bestDist) { bestDist = d; bestLine = 2; }
+            }
+            v[0] = bestLine;
             return v;
         }
 
+        std::vector<int> nonLead;
+        for (int i = 0; i < k; ++i) if (i != leadIdx) nonLead.push_back (i);
+
         // Pick the secondary note: the non-lead note closest to line 1's last
         // pitch, else the longest-held non-lead note, else the other extreme.
-        int secIdx = -1;
-        if (line1LastPitch >= 0)
-        {
-            int best = 1 << 20;
-            for (int i = 0; i < k; ++i)
-            {
-                if (i == leadIdx) continue;
-                const int d = std::abs (handNotes[static_cast<size_t> (i)] - line1LastPitch);
-                if (d < best) { best = d; secIdx = i; }
-            }
-        }
-        else
-        {
-            int bestDur = -1;
-            for (int i = 0; i < k; ++i)
-            {
-                if (i == leadIdx) continue;
-                const int d = i < static_cast<int> (handDurations.size()) ? handDurations[static_cast<size_t> (i)] : 0;
-                if (d > bestDur) { bestDur = d; secIdx = i; }
-            }
-        }
+        int secIdx = pickVoiceNote (nonLead, line1LastPitch);
         if (secIdx < 0)
             secIdx = leadIsTop ? 0 : k - 1;
+        v[static_cast<size_t> (secIdx)] = 1;
 
-        v[static_cast<size_t> (secIdx)] = 1;      // everything else stays on line 0
-        return v;
+        // A third line only ever comes out of what line 1 didn't already
+        // claim, and only when the ceiling allows it.
+        if (maxLines >= 3)
+        {
+            std::vector<int> afterSecondary;
+            for (int i : nonLead) if (i != secIdx) afterSecondary.push_back (i);
+
+            if (needsAnotherLine (afterSecondary, tertiaryActive))
+            {
+                const int terIdx = pickVoiceNote (afterSecondary, line2LastPitch);
+                if (terIdx >= 0)
+                    v[static_cast<size_t> (terIdx)] = 2;
+            }
+        }
+
+        return v;                                 // everything else stays on line 0
     }
 
     double handDifficulty (int noteCount, int spanSemis) noexcept
