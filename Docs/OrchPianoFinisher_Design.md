@@ -1,6 +1,17 @@
 # OrchPiano Finisher — scoping (Phase 1 + 2 + 3 built, notation-scale added)
 
-Status: **Real-take test on "slack_tide" (2026-09-05) found + fixed a genuine
+Status: **MIDI output mode added 2026-09-05** (§16), after the quantize fix (below) still
+left music21's own notation choices genuinely poor on a real full piece - useless
+cross-staff stems, no real up/down-stem voice separation, almost no logical beaming (the
+user's own direct visual assessment). `write_midi()` bypasses music21's Score/notation
+model entirely: writes a plain 2-track (RH/LH) MIDI file carrying the same
+merge-plus-safety-net-corrected note data, letting Dorico's own more mature MIDI-import
+engine choose voices/stems/beaming. Pass an output path ending `.mid`/`.midi` instead of
+`.musicxml` to use it. Trade-off the user explicitly accepted: no velocity-derived
+`<dynamics>` text marks (MusicXML-only; raw velocity is still in the file) and no
+explicit lead/secondary voice tagging (merged per hand; Dorico re-derives voices itself).
+
+**Real-take test on "slack_tide" (2026-09-05) found + fixed a genuine
 `build_score()` bug (§15): bare `quantize()` misread long straight 32nd-note runs as
 scattered eighth-note triplets**, because its default `quarterLengthDivisors=(4,3)` has no
 divisor that reaches a 32nd note (0.125 quarterLength) - MPL's captures genuinely need
@@ -574,3 +585,56 @@ trusting it as a real regression test (a first attempt using 16 hand-built, perf
 uniform 32nd notes passed under BOTH the buggy and fixed code - quantize()'s look-ahead
 handles a uniform run fine regardless, so that fixture didn't actually exercise the bug;
 only real, mixed-duration/mixed-onset performance data did).
+
+## 16. MIDI output mode — music21's notation model itself was the problem, not the quantize bug
+
+Even with §15's quantize fix landed and verified tuplet-clean, the user re-opened the
+corrected `slack_tide_finished.musicxml` in Dorico themselves and found the actual
+engraving still genuinely poor: "useless and ugly cross-staff stems", "the idea of
+up/down-stem voices is non-existent, everything looking funny", "logical beaming is
+almost non-existent." Direct, first-hand assessment against real output, not a guess.
+Conclusion, stated plainly by the user: **"our engine is capable of the reduction to one
+grand staff from 4, but Music21 is very clumsy"** at the actual notation-authoring layer
+(stem direction, voice separation, beaming) - a different, deeper limitation than the
+quantize-divisor bug, which was about *rhythm value* correctness, not layout quality.
+
+**Fix: skip music21's Score/notation model entirely for output.** `write_midi()` takes
+the exact same `grouped` structure (post `_fix_voice_stem_order` + `_guard_staggered_
+overlaps`, same as the MusicXML path) and writes a plain 2-track Standard MIDI File - RH
+on channel 0, LH on channel 1, voice 1 and voice 2 merged back into one polyphonic line
+per hand (their separate tagging only mattered for music21's own stem-direction choice,
+which is no longer in the picture). Dorico's own MIDI-import engine - more mature at
+exactly this task than a batch MusicXML writer - then makes its own voice-separation,
+stem, and beaming decisions on import, same as it would for genuine performance MIDI.
+
+**Explicit trade-off, accepted by the user, not silently dropped**: velocity-derived
+`<dynamics>` text marks (Phase 3, §13) are MusicXML-only and do not carry over - raw
+velocity is still present in the MIDI file, just not rendered as text. Explicit lead/
+secondary voice tagging is also given up (merged per hand); Dorico re-derives voices on
+its own instead of using OrchPiano's own already-decided split. User: "I am ready to
+renounce the few dynamic markings for cleaner notation" - a deliberate choice, not a
+regression to work around later.
+
+**Dispatch**: by output file extension - a path ending `.mid`/`.midi` writes MIDI; any
+other extension (still `.musicxml` by default) keeps the existing music21 pipeline
+unchanged. `--notation-scale` still applies to the MIDI path: multiplies tick positions/
+durations directly (`ticks_per_beat` held fixed) - the MIDI-domain equivalent of Bitwig's
+own Content Scaling the user originally asked about (see §14's opening motivation), and
+simpler than the MusicXML route's augmentOrDiminish-after-quantize ordering concern,
+since there is no notated-grid model here for a pre/post-scale order to interact badly
+with - a plain integer tick multiply is exact.
+
+**A real near-miss caught during this work, worth recording**: while cleaning up scratch
+verification files from §15's investigation, `slack_tide_finished.musicxml` (the user's
+actual requested deliverable, sitting in `Orch_Capture MIDI/`, not a scratch file in
+`Tools/finisher/`) was deleted by mistake alongside genuine scratch outputs. Caught and
+regenerated immediately, before the user noticed - but a real lesson: verify what a file
+actually IS (a deliverable vs. a scratch artifact) before deleting it, not just infer that
+from which directory it happens to sit in.
+
+**Verified**: `test_write_midi_merges_voices_and_scales_ticks` in `test_finisher.py` -
+confirms voice 1 and voice 2 notes on the same hand both land on that hand's single MIDI
+channel, and that `notation_scale` multiplies every tick exactly. Regenerated
+`slack_tide_finished.mid` (784 source notes, balanced 505/505 RH and 279/279 LH
+note-on/off pairs, both tracks ending at the same length) - visual confirmation in Dorico
+pending the user's own re-check.
