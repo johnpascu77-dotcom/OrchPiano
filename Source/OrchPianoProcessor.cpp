@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <map>
+#include <utility>
 
 // ============================================================================
 
@@ -59,6 +60,9 @@ OrchPianoAudioProcessor::OrchPianoAudioProcessor()
     wMelodyBassParam      = parameters.getRawParameterValue ("wMelodyBass");
     wVelocityParam        = parameters.getRawParameterValue ("wVelocity");
     wDoubleParam          = parameters.getRawParameterValue ("wDouble");
+    excludeKsNotesParam   = parameters.getRawParameterValue ("excludeKsNotes");
+    ksZoneMinParam        = parameters.getRawParameterValue ("ksZoneMin");
+    ksZoneMaxParam        = parameters.getRawParameterValue ("ksZoneMax");
 
     resetNoteMap();
 
@@ -169,6 +173,30 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
         juce::ParameterID { "wDouble", 1 }, "Weight: Doubling Penalty",
         juce::NormalisableRange<float> (0.0f, 2.0f, 0.01f), 1.0f));
 
+    // Found 2026-09-05, live, from a full-rig capture: OrchPiano has no
+    // concept of keyswitch/articulation-select notes at all - every incoming
+    // pitch is treated as real musical content. If any leak through upstream
+    // (OrchMerge now has its own per-Sender exclusion, but that's per
+    // instrument and this rig uses several different destination zones), the
+    // damage is worse than just extra notes: ocpn::bassIndex() picks the
+    // single LOWEST pitch in the whole onset group as "the" bass note with
+    // no floor at all, so a keyswitch note (always far lower than any real
+    // bass pitch) gets misidentified as Bass and PROTECTED - reduceHand()'s
+    // poly-cap loop explicitly refuses to drop Melody/Bass-tagged notes and
+    // gives up once everything remaining is protected, which is how a
+    // configured "Notes / Hand" cap of 4 was observed keeping far more than
+    // 4. This is a backstop for the common single-zone case, not a
+    // multi-zone solution - a rig with several different per-instrument
+    // destination zones still wants OrchMerge's own per-Sender exclusion at
+    // each instrument's own zone; this catches whatever gets through anyway.
+    // Off by default - existing rigs without this problem see no change.
+    params.push_back (std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { "excludeKsNotes", 1 }, "Exclude Keyswitch Notes", false));
+    params.push_back (std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID { "ksZoneMin", 1 }, "KS Zone Min", 0, 127, 24));
+    params.push_back (std::make_unique<juce::AudioParameterInt>(
+        juce::ParameterID { "ksZoneMax", 1 }, "KS Zone Max", 0, 127, 35));
+
     return { params.begin(), params.end() };
 }
 
@@ -180,6 +208,18 @@ void OrchPianoAudioProcessor::prepareToPlay (double newSampleRate, int)
 
 void OrchPianoAudioProcessor::releaseResources() {}
 bool OrchPianoAudioProcessor::isBusesLayoutSupported (const BusesLayout&) const { return true; }
+
+bool OrchPianoAudioProcessor::isNoteInKsExclusionZone (int note) const noexcept
+{
+    if (excludeKsNotesParam == nullptr || excludeKsNotesParam->load() < 0.5f)
+        return false;
+
+    int lo = ksZoneMinParam != nullptr ? juce::roundToInt (ksZoneMinParam->load()) : 24;
+    int hi = ksZoneMaxParam != nullptr ? juce::roundToInt (ksZoneMaxParam->load()) : 35;
+    if (lo > hi)
+        std::swap (lo, hi);
+    return note >= lo && note <= hi;
+}
 
 void OrchPianoAudioProcessor::resetNoteMap()
 {
@@ -1041,6 +1081,18 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
             output.addEvent (message, samplePosition);
             continue;
         }
+
+        // Dropped entirely (not forwarded to output either) rather than
+        // passed through like OrchMerge's Sender does for its own downstream
+        // instrument - a piano reduction has no legitimate use for a
+        // keyswitch/articulation-select note, and letting it reach role
+        // tagging is actively harmful: ocpn::bassIndex() has no floor at all
+        // and will misidentify it as the group's bass note (see
+        // createParameterLayout for the live finding this fixes). Applies
+        // identically to note-on and note-off so a pair is never split.
+        if ((message.isNoteOn() || message.isNoteOff())
+            && isNoteInKsExclusionZone (message.getNoteNumber()))
+            continue;
 
         if (planning)
         {

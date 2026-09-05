@@ -94,6 +94,11 @@ private:
     std::atomic<float>* wMelodyBassParam      = nullptr;
     std::atomic<float>* wVelocityParam        = nullptr;
     std::atomic<float>* wDoubleParam          = nullptr;
+    std::atomic<float>* excludeKsNotesParam   = nullptr;
+    std::atomic<float>* ksZoneMinParam        = nullptr;
+    std::atomic<float>* ksZoneMaxParam        = nullptr;
+
+    bool isNoteInKsExclusionZone (int note) const noexcept;
 
     // ---- note tracking (ONF pattern) ----
     struct TrackedNote
