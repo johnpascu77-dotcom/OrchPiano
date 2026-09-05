@@ -1,4 +1,4 @@
-# OrchPiano Finisher — scoping (Phase 1 + 2 built)
+# OrchPiano Finisher — scoping (Phase 1 + 2 + 3 built)
 
 Status: **Phase 1 (merge) BUILT + A/B'd 2026-09-05** - decisively better than Dorico's own
 Reduce (§9). **Phase 2 (real-time hand-playability safety net) BUILT + validated +
@@ -11,9 +11,13 @@ outlasts its own measure (§11). User's own review of that same Dorico pass caug
 second, separate real problem - up-stem notes rendering below down-stem notes, "very
 often" - **fixed same-day, §12: `_fix_voice_stem_order`** swaps which onset-group gets
 which stem direction when they'd otherwise clash, a pure notation relabeling that never
-touches OrchPiano's own pitch/duration/hand decisions. `Tools/finisher/orchpiano_finisher.py`.
-Name and location (§5, §7) both confirmed: stays "Finisher", stays in this repo at
-`Tools/finisher/`. Phase 3 (dynamics) next; Phase 4 not started (§6).
+touches OrchPiano's own pitch/duration/hand decisions. **Phase 3 (velocity-derived
+dynamics) BUILT + validated + visually confirmed 2026-09-05** (§13) - real data forced a
+hysteresis redesign mid-build (a 1-onset confirmation was not enough; needed a real
+time-hold). `Tools/finisher/orchpiano_finisher.py` + a new persisted regression suite,
+`Tools/finisher/test_finisher.py`. Name and location (§5, §7) both confirmed: stays
+"Finisher", stays in this repo at `Tools/finisher/`. Phase 4 (polish) not started (§6),
+deliberately unscoped until real use shows what's missing.
 
 ## 1. The problem, precisely
 
@@ -138,7 +142,7 @@ not assuming it.
 |---|---|---|
 | **1 — merge only** | Parse 4ch MIDI, place onto 2-staff/2-voice model, write MusicXML with no dynamics yet. | Against Dorico's own Reduce output on the same file — is the voice-leading/layout actually better? This is the whole premise of the tool; confirm it before adding anything else. |
 | **2 — safety-net pass** ✅ BUILT 2026-09-05 | Real (not onset-group) cross-attack span/count enforcement per hand + flag-only cross-hand crossing report (§10) - broader than the original "same-voice-pair collision + boundary voice-crossing" framing, per the scope-gap finding in §9's investigation. | Independently re-swept all 3 real test files post-guard: zero span/count violations remain. Not yet re-imported to Dorico for a visual check of the corrected files. |
-| **3 — dynamics** | Velocity → bucketed `<dynamics>` markings with hysteresis (§3). | Markings land at musically sensible points, not one per chord; A/B against the passed-through CC11 to confirm the velocity-derived version is actually more coherent, not just different. |
+| **3 — dynamics** ✅ BUILT 2026-09-05 | Velocity → bucketed `<dynamics>` markings with hysteresis (§3, §13). | Markings land at musically sensible points, not one per chord - confirmed visually in Dorico (§13). CC11 A/B not done as a literal side-by-side (CC11 was never wired into `extract_notes` at all - out of scope, not needed once velocity proved sensible on its own). |
 | **4 — polish / CLI ergonomics** | Whatever Phase 1–3 testing on real takes shows is actually missing — deliberately not pre-specified. | Real use on real captures. |
 
 Each phase tested against the actual `Grand Piano_0.mid` / `_0_post.mid` files already in
@@ -387,3 +391,40 @@ before/after on real data (not a screenshot) at the exact bug location - voice 1
 at that onset demonstrably moved from a lower-averaging group `[71, 84]` (avg 77.5) to a
 higher one `[80]` (avg 80), with voice 2 taking the swapped-out chord. Structural note
 counts re-verified unchanged on all three files after the fix.
+
+## 13. Phase 3 build: velocity-derived dynamics, including a mid-build hysteresis redesign
+
+Built per §3's already-settled recommendation: `compute_dynamics_marks` buckets the
+average velocity of each distinct onset (across all 4 channels - a piano dynamic applies
+to the whole instrument, not one hand) into pp/p/mp/mf/f/ff (roughly equal 1-127 splits),
+inserted as `music21.dynamics.Dynamic` under the LH staff (RH if a Hands=Right-only take
+leaves LH empty), by convention.
+
+**First cut used the design doc's literal wording** ("stays changed for more than one
+onset") as a 1-onset confirmation: a new bucket commits once the very next onset agrees.
+**Tested against real data before trusting it, and it failed**: 11 bucket flips across 12
+beats on `Grand Piano_0.mid`, because real velocity sits right at a bucket boundary and
+naturally jitters across it beat-to-beat in a fast passage - exactly the "marking every
+chord" clutter this was supposed to prevent, just arriving one onset later than literally
+every chord. **Redesigned to require a bucket to hold for a real span of time** (default 1
+beat) before committing, not just one extra onset - re-tested on the identical passage and
+got 5 well-spaced, musically sensible marks. A run that doesn't hold long enough is
+skipped entirely (not merged into a neighboring bucket).
+
+**CC11 A/B - descoped, not skipped by accident**: the phased-build table's original
+Phase-3 success criterion called for an A/B against passed-through CC11. `extract_notes`
+never captured CC data at all (Phase 1-2 only needed note on/off), and by the time Phase 3
+was built, velocity alone was already producing a sensible, well-spaced dynamic arc with
+no evidence of a problem CC11 would fix - so wiring up CC extraction purely to prove a
+negative wasn't worth the added surface. If a future real take's velocity-derived arc ever
+looks wrong, that's the trigger to revisit CC11, not before.
+
+**Verified in Dorico**: the "f" mark at the piece's opening and a later "mp" mark both
+render as proper bold-italic dynamics text below the bass staff, at the correct beat
+positions, clearly spaced apart - not clustered, not overlapping notes.
+
+**New: `Tools/finisher/test_finisher.py`** - a persisted regression suite (plain asserts,
+mirroring `OrchPianoReductionLogicCheck.cpp`'s own pattern, no new dependency) collecting
+the edge-case tests written ad hoc across all three phases: the Phase 2 crash case (a new
+note owning the pitch extreme it would need to be its own victim to fix), the voice-swap
+case, and this session's dynamics-hysteresis case. Run: `python test_finisher.py`.
