@@ -637,4 +637,51 @@ confirms voice 1 and voice 2 notes on the same hand both land on that hand's sin
 channel, and that `notation_scale` multiplies every tick exactly. Regenerated
 `slack_tide_finished.mid` (784 source notes, balanced 505/505 RH and 279/279 LH
 note-on/off pairs, both tracks ending at the same length) - visual confirmation in Dorico
-pending the user's own re-check.
+pending the user's own re-check. **Correction, see §17: that 505/279 "balanced" count was
+itself masking a real bug** - the pairs were balanced (matching on/off counts) but 44 of
+them were phantom zero-length notes, not genuine ones.
+
+## 17. `write_midi` surfaced a real, pre-existing `_guard_hand_playability` bug: same-onset victims truncated to zero length
+
+The user's own Dorico MIDI Import dialog was the thing that caught this - not a script.
+Basic editor's "Total no. of notes" column reported 488 (RH) / 272 (LH), fewer than the
+505/279 `write_midi()` had actually written. Investigated the mismatch directly rather
+than assuming Dorico's importer was just being lossy: `mido`-read the generated file back
+and found 25 RH / 4 LH literal same-pitch note-on-before-previous-note-off overlaps -
+ambiguous events a real MIDI receiver can't unambiguously pair, explaining why Dorico's
+own count came in lower.
+
+Bisecting the pipeline stage-by-stage (not guessing) found the real origin BEFORE
+`write_midi()` even runs: `_guard_hand_playability` (Phase 2, §10 - shared by both the
+MusicXML and MIDI export paths) went from 1 pre-existing degenerate note (a harmless raw-
+capture artifact) to 44 after it ran. Its truncation line, `victim.end_tick =
+min(victim.end_tick, n.start_tick)`, assumes `victim.start_tick <= n.start_tick` - true by
+construction for every candidate EXCEPT when `victim` shares `n`'s own onset tick, a
+genuine same-instant chord where the "trigger" and the "victim" attack at the identical
+instant. In that case the rule sets `end_tick == start_tick`: a zero-length ghost note
+that a real receiver, or `write_midi()`'s own event writer, still faithfully emits as a
+note-on/off pair. **Why the MusicXML path never surfaced this**: `build_score()` computes
+duration at the ONSET-GROUP level (the chord's longest release), not per individual
+pitch within it - a zeroed-out chord member silently inherited its sibling notes'
+legitimate duration instead of rendering as its own broken element. The bug was real and
+present since Phase 2 shipped; only `write_midi()`'s genuinely per-note duration exposed
+it as an actual defect rather than a latent one.
+
+**Fix**: when the chosen victim shares the triggering note's onset, drop it outright
+(`notes[:] = [n for n in notes if id(n) not in to_remove]`) instead of truncating it to
+nothing - there is no legitimate "shorten to end before it starts" resolution for a
+same-instant sibling; the only honest outcome for an over-limit same-onset chord is
+removing the excess note, not leaving a phantom in its place. Genuine cross-attack
+truncations (the normal, overwhelmingly common case - a real, later attack shortening a
+still-sustaining earlier note) are completely unaffected.
+
+**Verified**: `test_hand_playability_same_onset_victim_is_dropped_not_zeroed` in
+`test_finisher.py` - 5 same-onset notes spanning 4 semitones against `max_span=3` forces
+exactly the same-instant-chord violation the bug needed (a genuinely later attack can
+never trigger it, by construction) and asserts the over-limit note is actually removed
+from the list, not left at zero/negative duration. Re-ran against the real capture:
+`_guard_hand_playability` now reports "dropped 43 same-onset note(s)" explicitly (up from
+0 explanation before - they were silently becoming ghosts) and the regenerated
+`slack_tide_finished.mid` has zero same-pitch overlaps and perfectly balanced 469/469 (RH)
+and 271/271 (LH) note-on/off pairs - the number Dorico's own import should now match
+exactly.
