@@ -1,6 +1,15 @@
 # OrchPiano Finisher — scoping (Phase 1 + 2 + 3 built, notation-scale added)
 
-Status: **`--notation-scale` added 2026-09-05** (§14) - replaces the manual Dorico
+Status: **Real-take test on "slack_tide" (2026-09-05) found + fixed a genuine
+`build_score()` bug (§15): bare `quantize()` misread long straight 32nd-note runs as
+scattered eighth-note triplets**, because its default `quarterLengthDivisors=(4,3)` has no
+divisor that reaches a 32nd note (0.125 quarterLength) - MPL's captures genuinely need
+that resolution despite being restricted to plain power-of-2 rhythms. Fixed by passing
+`quarterLengthDivisors=(8, 6)` explicitly. This is not a Dorico bug and not caused by
+`--notation-scale` (present at scale 1.0 too) - see §15 for the full trace, including two
+dead ends ruled out first (Dorico rendering, then notation-scale itself).
+
+**`--notation-scale` added 2026-09-05** (§14) - replaces the manual Dorico
 Requantize-then-double-durations dance the user was doing by hand for MPL-driven takes
 whose native grid notates too fine (32nds where 16ths would read cleanly). First
 implementation attempt (pre-scaling the tick-to-quarterLength conversion) looked correct
@@ -501,3 +510,67 @@ through the actual `build_score()` function and asserts every `(offset, duration
 scale 2 equals the scale-1 pair doubled exactly - catches this class of bug (and the
 original pre-scale approach's failure mode) directly against production code, not a
 reimplemented model of it.
+
+## 15. Real-take test on "slack_tide" — bare `quantize()` misread straight 32nd notes as triplets
+
+First real end-to-end run of the Finisher (including `--notation-scale 2`) on a full MC
+piece rather than the `Grand Piano_0.mid` test file. Ran cleanly (784 notes, no crashes),
+but a Dorico visual check found a large stretch of measures rendering as completely blank
+- real notation missing on-screen, not just a cosmetic issue.
+
+**Two dead ends ruled out first, in order, before finding the real cause:**
+1. **Not a Finisher data-loss bug.** Parsed the exported MusicXML directly with `music21`
+   (not by trusting the pipeline) - every "blank" measure actually contained full, correct
+   note data (5-13 notes each) with the right total duration. Whatever was wrong, notes
+   were not being dropped.
+2. **Not caused by `--notation-scale`.** Re-generated the SAME piece at `--notation-scale
+   1` (no scaling at all) and got the identical blank-measure symptom in Dorico. Since the
+   bug is present with scaling completely off, the scale feature (verified correct on its
+   own in §14) cannot be the cause.
+
+**Root cause, found by checking the raw MIDI directly, not by guessing at Dorico's import
+behavior**: the exported MusicXML contained 113-114 real `<tuplet>` elements - almost all
+of them ordinary-looking 3:2 tuplets. Checked whether the source MIDI actually contains
+triplets: it does not, for this stretch - `mido`-parsed note-on ticks land exactly at
+120/960 (quarterLength 0.125), the exact 32nd-note position, not a triplet division. MPL
+is deliberately restricted to plain power-of-2 rhythms (confirmed with the user - "we
+explicitly restricted MPL to output crazy rhythm formations" is a hard no, not a
+maybe) - though a genuine ternary-grid MPL instance can and does contribute real 3-against-2
+content elsewhere ("common since Schubert", per the user - not itself a bug).
+
+The actual defect: `build_score()`'s `p.quantize(inPlace=True, recurse=True)` call never
+passed `quarterLengthDivisors`, so it used music21's own default, `(4, 3)` - snap to
+16th notes OR 8th-note triplets, whichever is closer. **Neither divisor reaches 0.125** (a
+32nd note). Forced to choose between two grids that both fit poorly, `quantize()` picked
+whichever was numerically closer note-by-note, inconsistently - misreading a plain run of
+32nd notes as scattered eighth-note triplets, one note at a time. This is real, valid
+MusicXML (which is exactly why Dorico's import silently produced something un-notatable-
+looking rather than erroring loudly) but is not what the source performance contains.
+`--notation-scale 2` then compounded the same pre-existing bug into even stranger
+quarter-note-level tuplets (confirmed via `<tuplet-normal>` type counts: 94 real eighth-
+note tuplets in the unscaled export dropped to 6, while quarter-note tuplets rose from 5
+to 92) - but doubling only ever exposed a defect that was already there at scale 1.0, it
+did not cause it.
+
+**Fix**: pass `quarterLengthDivisors=(8, 6)` explicitly - 32nd notes or 16th-note
+triplets. This is exactly the manual floor the user has always had to set by hand in
+Dorico's own Requantize dialog for MPL-driven takes ("Requantize everything to 32nd notes
+and 16th tuplets as minimum values"); matching it in code removes the ambiguity that
+caused the misreading. Divisor 6 already subsumes every divisor-3 (8th-note-triplet)
+position (2/6 and 4/6 land exactly there), so genuine ternary-grid content from the
+Schubert-style MPL instance still quantizes to the correct offset - this fix narrows only
+the specific gap (0.125, reachable by neither original divisor), not triplets in general.
+
+**Verified three ways**, not just "the code compiles": (1) direct `<tuplet-normal>` count
+in the re-exported MusicXML dropped from 113-114 to 0 on both the scale-1 and scale-2
+versions of the same file; (2) re-imported both corrected files into Dorico and scrolled
+the ENTIRE piece (previously-blank measures 17-30, the ending at 76-77, and everything in
+between) - full, correctly-notated content throughout, no stray tuplet brackets; (3) a
+persisted regression test (`test_quantize_does_not_invent_tuplets_from_straight_32nd_
+notes` in `test_finisher.py`) using a real 20-note excerpt lifted directly from
+`OrchPiano_slack_tide.mid`'s channel 0 - confirmed this exact fixture reproduces 7 spurious
+tupleted notes under the bare pre-fix `quantize()` call and 0 under the fix, before
+trusting it as a real regression test (a first attempt using 16 hand-built, perfectly
+uniform 32nd notes passed under BOTH the buggy and fixed code - quantize()'s look-ahead
+handles a uniform run fine regardless, so that fixture didn't actually exercise the bug;
+only real, mixed-duration/mixed-onset performance data did).
