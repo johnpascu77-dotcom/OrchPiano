@@ -1,6 +1,14 @@
-# OrchPiano Finisher — scoping (Phase 1 + 2 + 3 built)
+# OrchPiano Finisher — scoping (Phase 1 + 2 + 3 built, notation-scale added)
 
-Status: **Phase 1 (merge) BUILT + A/B'd 2026-09-05** - decisively better than Dorico's own
+Status: **`--notation-scale` added 2026-09-05** (§14) - replaces the manual Dorico
+Requantize-then-double-durations dance the user was doing by hand for MPL-driven takes
+whose native grid notates too fine (32nds where 16ths would read cleanly). First
+implementation attempt (pre-scaling the tick-to-quarterLength conversion) looked correct
+in isolation but produced wrong durations against real output; fixed by applying
+`music21`'s own `Stream.augmentOrDiminish()` after quantization instead - see §14 for the
+full story, including why the isolated proof was misleading.
+
+**Phase 1 (merge) BUILT + A/B'd 2026-09-05** - decisively better than Dorico's own
 Reduce (§9). **Phase 2 (real-time hand-playability safety net) BUILT + validated +
 visually confirmed in Dorico 2026-09-05** (§10, §11) — closes the scope gap §9's
 investigation surfaced: OrchPiano's own per-onset-group span/count check can't see
@@ -428,3 +436,68 @@ mirroring `OrchPianoReductionLogicCheck.cpp`'s own pattern, no new dependency) c
 the edge-case tests written ad hoc across all three phases: the Phase 2 crash case (a new
 note owning the pitch extreme it would need to be its own victim to fix), the voice-swap
 case, and this session's dynamics-hysteresis case. Run: `python test_finisher.py`.
+
+## 14. `--notation-scale` — replacing the manual Dorico double-durations workflow
+
+Prompted by the user's own description of a real, recurring manual step: to get a clean
+read on the MC score "slack_tide" (good audible results running through OrchPiano/Reduce),
+they had to import to Dorico, **Requantize** everything to a 32nd-note/16th-tuplet floor
+(forced by MPL's own 16th-note step grid - already an established fact from an earlier
+session, not rediscovered here), then **Write ▸ Edit Duration ▸ Double Durations** on
+everything, so the piece reads in 16ths instead of 32nds. Asked, practically: could
+OrchCapture double the recorded MIDI before saving (Bitwig's own Content Scaling
+50%/200% does this in one step), or could the Finisher offer it as an option? Decided on
+the Finisher: it's the layer that already reasons about notation display (quantize,
+measures, ties, stems) - OrchCapture just records raw ticks faithfully, which is the
+correct layer to leave alone, and scaling in the Finisher needs no companion Bitwig step
+at all.
+
+**First implementation attempt (wrong, caught before shipping)**: scale the *effective*
+`ticks_per_beat` divisor fed into every tick→quarterLength conversion (`_report_hand_
+crossing`, `compute_dynamics_marks`, `build_score`), reasoning that halving the reference
+tempo unit is mathematically the same as scaling every resulting value afterward, since
+`Stream.quantize()`'s snap-to-grid should commute with a uniform rescale. **Verified in
+isolation first** - a 20,000-random-tick Python simulation modeling quantize() as an
+independent per-value snap-to-nearest-grid-point showed zero mismatches. **Then verified
+against real Finisher output before trusting it** (this session's standing discipline -
+parse the real data, don't guess) by generating `scale1.musicxml`/`scale2.musicxml` from
+the same source file at scale 1 and 2 and diffing actual (offset, duration) pairs: 427 of
+453 notes came out wrong, many 3x instead of 2x. **Root cause**: music21's real
+`quantize()` has adaptive look-ahead across neighboring notes (per its own docstring, to
+avoid leaving gaps) that does not commute with a pre-scale the way an isolated per-value
+model assumed - the isolated proof was correct for the model it tested, but the model
+didn't match the real function.
+
+**Fix: `Stream.augmentOrDiminish(scale, inPlace=True)`, applied AFTER `quantize()`**, not
+before. Every value being scaled at that point is already snapped onto a clean grid, so
+multiplying by an exact factor (2.0) keeps it on a grid too - no adaptive-quantize
+interaction left to go wrong. Confirmed empirically, not just from the docstring, that it
+correctly recurses into nested `Voice` streams and scales top-level `Dynamic` marks
+(dynamics land at the correct, doubled beat position). `--notation-scale`'s dynamics-
+hysteresis window (`min_hold_beats`) is divided by the scale factor so "hold for 1 beat"
+still means one beat of the *final* post-scale notation, not the denser pre-scale grid -
+the marks are computed at unscaled offsets and carried along by the same
+`augmentOrDiminish` call as every note.
+
+**Re-verification after the fix, done properly this time**: a first re-check used a naive
+sorted-list positional comparison between the two output files, which produced spurious
+mismatches purely because doubling a note's length can make it cross an additional
+barline, adding an extra tied fragment (453 notes at scale 1 vs. 458 at scale 2 - a real,
+expected count difference, not a bug) that shifted every later index out of alignment.
+Fixed by coalescing tied fragments (`start`→`continue`→`stop` chains of the same pitch)
+back into single musical events and comparing by `(offset, pitch)` key instead of list
+position - found 349 of 350 coalesced events correctly doubled, with the apparent single
+remaining "mismatch" traced directly to the raw tie-chain data (not trusted at face value):
+scale 1's chain was a 2-fragment `start(59.5, 0.5)`→`stop(60.0, 4.0)` totaling 4.5 beats;
+scale 2's was a 3-fragment `start(119.0, 1.0)`→`continue(120.0, 4.0)`→`stop(124.0, 4.0)`
+totaling exactly 9.0 = 2×4.5 - correct, just split into one more fragment because the
+doubled note now crosses one more barline. The "mismatch" was an artifact of the ad-hoc
+verification script's own coalescing logic not handling a 3-fragment chain with an
+intermediate `continue` tie, not a Finisher defect.
+
+**Persisted as a real regression test** (`test_notation_scale_doubles_offsets_and_durations`
+in `test_finisher.py`), not left as a one-off script: builds a small real score both ways
+through the actual `build_score()` function and asserts every `(offset, duration)` pair at
+scale 2 equals the scale-1 pair doubled exactly - catches this class of bug (and the
+original pre-scale approach's failure mode) directly against production code, not a
+reimplemented model of it.
