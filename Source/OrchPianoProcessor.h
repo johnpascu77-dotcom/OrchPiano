@@ -120,12 +120,24 @@ private:
     // ---- Phase 5c: maxRingBeats re-strike (planning engine) ----
     // A held note longer than `maxRingBeats` is re-articulated every that-many
     // beats (piano tone decays; an 8-beat tie is neither idiomatic nor what a
-    // pianist plays). The re-strikes are scheduled forward; the real (buffered)
-    // note-off still releases the note at its true end.
+    // pianist plays).
+    //
+    // 2026-09-06: no longer carries a precomputed `endPpq` - an earlier
+    // version only armed this at all when the note's total duration was
+    // already known from the lookahead buffer, which is exactly backwards
+    // for the case this exists to catch (a note whose real length exceeds
+    // the buffer's own lookahead window has no such known duration, so the
+    // safety net silently never engaged - live-found on a genuine ~55-beat
+    // sustain in Grieg's "Morning Mood" that produced zero re-strikes).
+    // Every emitted note now arms a checkpoint unconditionally; drainRestrikes
+    // decides against LIVE activeNotes state whether the note is still
+    // actually ringing when each checkpoint arrives, re-striking and
+    // rescheduling indefinitely for as long as it is - correct regardless of
+    // whether the note's eventual true length was ever knowable in advance.
     struct PendingRestrike
     {
         int outCh = 0, pitch = 0, inCh = 0, inNote = 0, vel = 100;
-        double nextPpq = 0.0, endPpq = 0.0;
+        double nextPpq = 0.0;
     };
     std::vector<PendingRestrike> pendingRestrikes;
 

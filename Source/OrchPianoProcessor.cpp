@@ -352,8 +352,6 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
 
     const int sample = juce::jmax (0, emitSample);
     const bool isFigure = figureReleasePpq > groupPpq + 1.0e-6;
-    const int figureDurTicks = isFigure
-        ? juce::jmax (1, juce::roundToInt ((figureReleasePpq - groupPpq) * 100.0)) : 0;
 
     // Unique pitches, ascending; keep the loudest onset per pitch.
     std::map<int, HeldOn> byPitch;
@@ -586,20 +584,30 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
 
             // A collapsed-figure note holds to figureReleasePpq and has no
             // buffered note-off (it is consumed) - schedule a hard release.
-            const int noteDur = isFigure ? figureDurTicks : subDur[static_cast<size_t> (idx)];
             if (isFigure)
                 pendingHardOffs.push_back ({ outCh, pitch, figureReleasePpq });
 
-            // maxRingBeats: a note held longer than the limit is re-articulated
-            // every that-many beats (piano tone decays). durTicks is ppq*100.
-            if (maxRing > 0 && noteDur > static_cast<int> ((maxRing + 0.5) * 100.0))
-            {
-                pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel,
-                                              groupPpq + maxRing, groupPpq + noteDur / 100.0 });
-                if (doLog)
-                    logEvent (groupPpq, "re-strike " + nn (pitch) + " every " + juce::String (maxRing)
-                              + " beats (held " + juce::String (noteDur / 100.0, 1) + ")");
-            }
+            // maxRingBeats: schedule a live check-and-restrike `maxRing` beats
+            // from now, unconditionally - NOT gated on this note's known
+            // duration. Live-found bug (2026-09-06, Grieg "Morning Mood" via
+            // the decision log): the old gate compared subDur (this note's
+            // matching note-off found by scanning FORWARD WITHIN THE
+            // LOOKAHEAD BUFFER, planBuf) against the ring limit - but a note
+            // whose real release sits further ahead than lookaheadBeats
+            // simply has NO match in the buffer yet, so subDur reads 0 and
+            // the gate silently never opens. That's exactly backwards: the
+            // safety net built for "this note is ringing too long" was blind
+            // to any note whose true length exceeded the very lookahead
+            // window meant to measure it - confirmed live on a genuine
+            // ~55-beat sustain (a real Grieg pedal point) that produced zero
+            // re-strikes despite maxRingBeats=4. Fixed by not trying to know
+            // the total length in advance at all: always arm a checkpoint,
+            // and let drainRestrikes decide against LIVE activeNotes state
+            // whether the note is still actually ringing when the checkpoint
+            // arrives - correct regardless of how long the note turns out to
+            // be, lookahead window or not.
+            if (maxRing > 0)
+                pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel, groupPpq + maxRing });
 
             (voice[ki] == 2 ? line2Emit : (voice[ki] == 1 ? line1Emit : line0Emit)) = pitch;
 
@@ -885,30 +893,36 @@ void OrchPianoAudioProcessor::drainRestrikes (juce::MidiBuffer& output, double b
 
     const double cutoff = (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
     const double step = juce::jmax (1, maxRingBeats);
+    const bool doLog = decisionLogParam != nullptr && decisionLogParam->load() >= 0.5f;
 
     for (auto it = pendingRestrikes.begin(); it != pendingRestrikes.end();)
     {
-        bool done = false;
-        while (! done && it->nextPpq <= cutoff && it->nextPpq < it->endPpq)
+        // No precomputed end - keep re-striking and rescheduling for as long
+        // as the note is genuinely still live, checked fresh each time
+        // against activeNotes (never against a precomputed "expected end",
+        // which is exactly what silently missed the bug this fixes).
+        bool stillLive = true;
+        while (stillLive && it->nextPpq <= cutoff)
         {
-            // Only re-strike if the note is still sounding (its real note-off
-            // hasn't been processed).
             bool live = false;
             for (const auto& t : activeNotes)
                 if (t.outputNote == it->pitch && t.outputChannel == it->outCh
                     && t.channel == it->inCh && t.inputNote == it->inNote)
                     { live = true; break; }
-            if (! live) { done = true; break; }
+            if (! live) { stillLive = false; break; }
 
             const int s = juce::jlimit (0, juce::jmax (0, numSamples - 1),
                 juce::roundToInt ((it->nextPpq + lookaheadPpq - blockStartPpq) / ppqPerSample));
             output.addEvent (juce::MidiMessage::noteOff (it->outCh, it->pitch), juce::jmax (0, s - 1));
             output.addEvent (juce::MidiMessage::noteOn (it->outCh, it->pitch,
                                                        static_cast<juce::uint8> (it->vel)), s);
+            if (doLog)
+                logEvent (it->nextPpq, "re-strike " + juce::MidiMessage::getMidiNoteName (it->pitch, true, true, 3)
+                          + " (still ringing past " + juce::String (maxRingBeats) + " beats)");
             it->nextPpq += step;
         }
 
-        if (done || it->nextPpq >= it->endPpq)
+        if (! stillLive)
             it = pendingRestrikes.erase (it);
         else
             ++it;
