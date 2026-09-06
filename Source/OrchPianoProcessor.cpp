@@ -2,6 +2,7 @@
 #include "OrchPianoEditor.h"
 
 #include <algorithm>
+#include <iterator>
 #include <map>
 #include <utility>
 
@@ -63,6 +64,7 @@ OrchPianoAudioProcessor::OrchPianoAudioProcessor()
     excludeKsNotesParam   = parameters.getRawParameterValue ("excludeKsNotes");
     ksZoneMinParam        = parameters.getRawParameterValue ("ksZoneMin");
     ksZoneMaxParam        = parameters.getRawParameterValue ("ksZoneMax");
+    repeatedNoteTremoloParam = parameters.getRawParameterValue ("repeatedNoteTremolo");
 
     resetNoteMap();
 
@@ -197,6 +199,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout OrchPianoAudioProcessor::cre
     params.push_back (std::make_unique<juce::AudioParameterInt>(
         juce::ParameterID { "ksZoneMax", 1 }, "KS Zone Max", 0, 127, 35));
 
+    // 2026-09-06 (Phase 5c-2d): a detected RepeatedNote figure is the raw
+    // MIDI shape of an orchestral roll (timpani, tremolo strings) - render it
+    // as an octave tremolo (confirmed idiomatic against a published piano
+    // reduction) instead of a flat sustained hold. On by default; off falls
+    // back to the pre-5c-2d behaviour for comparison.
+    params.push_back (std::make_unique<juce::AudioParameterBool>(
+        juce::ParameterID { "repeatedNoteTremolo", 1 }, "Roll -> Octave Tremolo", true));
+
     return { params.begin(), params.end() };
 }
 
@@ -261,6 +271,7 @@ void OrchPianoAudioProcessor::resetFigureState()
     currentFigureType = ocpn::FigureType::None;
     figConsumedIdentities.clear();
     pendingHardOffs.clear();
+    pendingTremolos.clear();
 }
 
 void OrchPianoAudioProcessor::dampAllRinging (juce::MidiBuffer& output, int sample)
@@ -366,7 +377,8 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
                                            int splitNote,
                                            int emitSample, double groupPpq,
                                            juce::MidiBuffer& output,
-                                           double figureReleasePpq)
+                                           double figureReleasePpq,
+                                           bool figureIsRoll)
 {
     if (group.empty())
         return;
@@ -607,9 +619,35 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             const juce::int64 emitSeq = nextNoteSeq++;
             activeNotes.push_back ({ src.channel, inPitch, pitch, outCh, emitSeq });
 
+            // 2026-09-06 (Phase 5c-2d): a RepeatedNote figure is the raw MIDI
+            // shape of an orchestral roll (timpani, tremolo strings) - render
+            // it as a genuine octave tremolo (confirmed idiomatic against a
+            // published reduction) rather than a flat sustained hold. Owns
+            // its whole lifecycle (alternation AND final release) via
+            // drainTremolos, so it must NOT also get the plain hard-off or
+            // maxRingBeats treatment below - both would fight the same
+            // output note on separate schedules. Guarded to a safe top pitch
+            // so an unusually high roll can't push the octave-up partner off
+            // a practical keyboard range; falls back to the old flat-hold
+            // behaviour in that case.
+            bool scheduledAsTremolo = false;
+            if (isFigure && figureIsRoll)
+            {
+                constexpr int kTremoloMaxHighPitch = 108;   // top of practical piano range
+                constexpr double kTremoloStepBeats = 0.25;  // fixed 16th notes
+                if (pitch + 12 <= kTremoloMaxHighPitch)
+                {
+                    pendingTremolos.push_back ({ outCh, pitch, pitch + 12, vel,
+                                                 src.channel, inPitch,
+                                                 groupPpq + kTremoloStepBeats, figureReleasePpq,
+                                                 kTremoloStepBeats, false });
+                    scheduledAsTremolo = true;
+                }
+            }
+
             // A collapsed-figure note holds to figureReleasePpq and has no
             // buffered note-off (it is consumed) - schedule a hard release.
-            if (isFigure)
+            if (isFigure && ! scheduledAsTremolo)
                 pendingHardOffs.push_back ({ outCh, pitch, figureReleasePpq });
 
             // maxRingBeats: schedule a live check-and-restrike `maxRing` beats
@@ -636,7 +674,10 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             // see snapUpToBar's header comment. Landing exactly on a downbeat
             // is what makes a re-strike read as a deliberate restatement
             // instead of a stray extra note.
-            if (maxRing > 0)
+            // A tremolo-scheduled note is already kept "alive" by its own
+            // alternation above - an independent maxRingBeats re-strike on
+            // the same activeNotes entry would race with it.
+            if (maxRing > 0 && ! scheduledAsTremolo)
                 pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel,
                                               snapUpToBar (groupPpq + maxRing), emitSeq });
 
@@ -941,8 +982,15 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             else
             {
                 double releasePpq = 0.0;
-                if (isFigGroup) { releasePpq = figureEndPpq; --figGroupsToEmit; }
-                reduceGroup (group, planPhraseSplit, emitSampleFor (gp), gp, output, releasePpq);
+                bool figureIsRoll = false;
+                if (isFigGroup)
+                {
+                    releasePpq = figureEndPpq;
+                    figureIsRoll = currentFigureType == ocpn::FigureType::RepeatedNote
+                        && repeatedNoteTremoloParam != nullptr && repeatedNoteTremoloParam->load() >= 0.5f;
+                    --figGroupsToEmit;
+                }
+                reduceGroup (group, planPhraseSplit, emitSampleFor (gp), gp, output, releasePpq, figureIsRoll);
                 planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n));
             }
         }
@@ -1075,6 +1123,56 @@ void OrchPianoAudioProcessor::drainHardOffs (juce::MidiBuffer& output, double bl
             [&] (const PendingRestrike& r) { return r.pitch == it->pitch && r.outCh == it->outCh; }),
             pendingRestrikes.end());
         it = pendingHardOffs.erase (it);
+    }
+}
+
+void OrchPianoAudioProcessor::drainTremolos (juce::MidiBuffer& output, double blockStartPpq,
+                                             double lookaheadPpq, double ppqPerSample, int numSamples)
+{
+    if (pendingTremolos.empty() || ppqPerSample <= 0.0)
+        return;
+
+    const double cutoff = (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
+
+    for (auto it = pendingTremolos.begin(); it != pendingTremolos.end();)
+    {
+        bool finished = false;
+
+        while (it->nextPpq <= cutoff)
+        {
+            const int s = juce::jlimit (0, juce::jmax (0, numSamples - 1),
+                juce::roundToInt ((it->nextPpq + lookaheadPpq - blockStartPpq) / ppqPerSample));
+            const int soundingPitch = it->highPhaseNow ? it->highPitch : it->lowPitch;
+
+            if (it->nextPpq >= it->endPpq - 1.0e-6)
+            {
+                // End of the figure's span: release whichever pitch is
+                // currently sounding and clear the matching activeNotes
+                // entry (by original INPUT identity, not by whichever pitch
+                // happens to be sounding right now - the two can differ
+                // depending on which phase this ended on).
+                output.addEvent (juce::MidiMessage::noteOff (it->outCh, soundingPitch), s);
+                for (auto a = activeNotes.begin(); a != activeNotes.end(); ++a)
+                {
+                    if (a->channel == it->inCh && a->inputNote == it->inNote)
+                    {
+                        activeNotes.erase (a);
+                        break;
+                    }
+                }
+                finished = true;
+                break;
+            }
+
+            const int nextPitch = it->highPhaseNow ? it->lowPitch : it->highPitch;
+            output.addEvent (juce::MidiMessage::noteOff (it->outCh, soundingPitch), juce::jmax (0, s - 1));
+            output.addEvent (juce::MidiMessage::noteOn (it->outCh, nextPitch,
+                                                       static_cast<juce::uint8> (it->vel)), s);
+            it->highPhaseNow = ! it->highPhaseNow;
+            it->nextPpq += it->stepBeats;
+        }
+
+        it = finished ? pendingTremolos.erase (it) : std::next (it);
     }
 }
 
@@ -1273,6 +1371,7 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         flushPlanBuffer (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, onsetWindowSamples);
         drainHardOffs (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples);
         drainRestrikes (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples, maxRing);
+        drainTremolos (output, blockStartPpq, lookaheadPpq, ppqPerSample, numSamples);
     }
     else if (! currentGroup.empty())
     {

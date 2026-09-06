@@ -97,6 +97,7 @@ private:
     std::atomic<float>* excludeKsNotesParam   = nullptr;
     std::atomic<float>* ksZoneMinParam        = nullptr;
     std::atomic<float>* ksZoneMaxParam        = nullptr;
+    std::atomic<float>* repeatedNoteTremoloParam = nullptr;
 
     bool isNoteInKsExclusionZone (int note) const noexcept;
 
@@ -187,6 +188,29 @@ private:
     std::vector<std::pair<int, int>> figConsumedIdentities;
     struct PendingHardOff { int outCh = 0, pitch = 0; double ppq = 0.0; };
     std::vector<PendingHardOff> pendingHardOffs;
+
+    // ---- Phase 5c-2d: timpani-roll -> octave tremolo ----
+    // A detected RepeatedNote figure (ocpn::detectFigure) IS the raw MIDI
+    // shape of an orchestral roll (timpani, tremolo strings) - one pitch
+    // struck far faster than any pianist plays it. Confirmed against a
+    // published reduction (the same Grieg passage that motivated Murmur):
+    // the idiomatic piano notation is an OCTAVE TREMOLO - alternate the same
+    // pitch class with its octave partner at a fixed, playable rate - not a
+    // flat sustained hold (what a RepeatedNote figure did before this).
+    // `repeatedNoteTremolo` param gates it (default on); the alternation is
+    // entirely self-scheduled, independent of maxRingBeats/pendingHardOffs -
+    // a tremolo note gets neither of those, this owns its whole lifecycle.
+    struct PendingTremolo
+    {
+        int outCh = 0, lowPitch = 0, highPitch = 0, vel = 100;
+        int inCh = 0, inNote = 0;         // to find + clear its activeNotes entry at the end
+        double nextPpq = 0.0, endPpq = 0.0, stepBeats = 0.25;
+        bool highPhaseNow = false;        // which pitch is currently sounding
+    };
+    std::vector<PendingTremolo> pendingTremolos;
+    void drainTremolos (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
+                        double ppqPerSample, int numSamples);
+
     void resetFigureState();
 
     // ---- open onset group (streaming engine) ----
@@ -255,7 +279,7 @@ private:
     void flushGroup (juce::MidiBuffer& output, int flushSample, double blockStartPpq, double ppqPerSample);
     void reduceGroup (const std::vector<HeldOn>& group, int splitNote,
                       int emitSample, double groupPpq, juce::MidiBuffer& output,
-                      double figureReleasePpq = 0.0);
+                      double figureReleasePpq = 0.0, bool figureIsRoll = false);
     void flushPlanBuffer (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,
                           double ppqPerSample, int numSamples, int onsetWindowSamples);
     void drainRestrikes (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,

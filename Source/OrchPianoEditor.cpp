@@ -18,7 +18,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     // EVERY build (see GenerateBuildTimestamp.cmake) - unlike __DATE__/
     // __TIME__ baked into this one .cpp, it stays accurate even when an
     // incremental build only recompiled a different file for its own fix.
-    buildLabel.setText ("Build: re-strike log shows input channel/note (helped find an OrchMerge leak)"
+    buildLabel.setText ("Build: RepeatedNote figures (rolls) now render as an octave tremolo (Phase 5c-2d)"
                          "  |  compiled " ORCHPIANO_BUILD_TIMESTAMP, juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);
@@ -51,6 +51,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     addToggleRow ("excludeKsNotes", "Exclude Keyswitch Notes");
     addSliderRow ("ksZoneMin", "KS Zone Min", 0, 127);
     addSliderRow ("ksZoneMax", "KS Zone Max", 0, 127);
+    addToggleRow ("repeatedNoteTremolo", "Roll -> Octave Tremolo");
 
     statusLabel.setFont (juce::Font (juce::FontOptions (12.0f)));
     statusLabel.setColour (juce::Label::textColourId, juce::Colours::aqua);
