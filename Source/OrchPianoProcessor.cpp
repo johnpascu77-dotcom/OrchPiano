@@ -780,7 +780,7 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                     prev = e.ppq;
                 }
                 const int priorSplit = splitNoteParam != nullptr ? juce::roundToInt (splitNoteParam->load()) : 60;
-                planPhraseSplit = ocpn::kdeHandSplit (phrasePitches, priorSplit, 9);
+                planPhraseSplit = ocpn::kdeHandSplit (phrasePitches, priorSplit);
                 adaptiveSplit.store (planPhraseSplit);
                 prevGroupNotes.clear();
                 prevGroupHands.clear();

@@ -300,11 +300,32 @@ namespace ocpn
     //
     // Where a fixed split point is wrong ~2 chords in 5 (ReductionRules §14.5),
     // the planning engine picks the split per lookahead window from where the
-    // notes actually sit: build a smoothed pitch-density curve over the window
-    // and take its deepest valley - constrained to +/- `maxDriftSemis` of the
-    // `prior` split so a thin or ambiguous window can't swing it wildly. With
-    // fewer than 4 window notes, returns `prior` unchanged.
-    int kdeHandSplit (const std::vector<int>& windowPitches,
-                      int prior,
-                      int maxDriftSemis = 9) noexcept;
+    // notes actually sit: the LARGEST real gap between actually-played
+    // pitches in the window (>= `kMinGapSemis`, with a real cluster of notes
+    // on each side - see .cpp) - not a smoothed density valley. With fewer
+    // than 4 window notes, or no qualifying gap anywhere, returns `prior`
+    // unchanged.
+    //
+    // 2026-09-07 REWRITE - the original approach (a Gaussian-smoothed pitch-
+    // density curve, valley constrained to +/- a fixed `maxDriftSemis` of
+    // `prior`) live-found a real bug on Grieg's "Morning Mood" opening: a
+    // sustained E-major wind chord (E2-B2-E3-G#3, an octave-plus stack) under
+    // a flute melody starting an octave above it. The true gap between them
+    // sits ~8-16 semitones from the default prior (60) - outside the old
+    // +/-9 search window entirely, which was consequently BLIND to it and
+    // could only ever find a spurious, shallow local dip INSIDE the chord's
+    // own narrow spread instead, splitting the chord itself across both
+    // hands. Confirmed by re-implementing the old algorithm exactly and
+    // running it on this real passage's actual pitch data (see OrchPiano
+    // memory/design-doc trail) - not a hypothetical. Widening the fixed
+    // window is not a real fix (any wider-still separation in a different
+    // piece fails the same way) - the search now spans the window's full
+    // observed pitch range instead, and the "is this really a hand-split
+    // gap" question is answered structurally (a wide-enough gap with real
+    // note clusters on both sides), not by how close it sits to a default.
+    // The old `maxDriftSemis` safety idea is now subsumed by requiring a
+    // genuine gap width + real content on each side, rather than distance
+    // from a fixed prior - an implausible one-note outlier can no longer
+    // fake a "cluster" on its own (see kMinNotesPerSide in the .cpp).
+    int kdeHandSplit (const std::vector<int>& windowPitches, int prior) noexcept;
 }

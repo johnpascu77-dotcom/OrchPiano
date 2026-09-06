@@ -709,44 +709,51 @@ namespace ocpn
         return std::clamp (std::sqrt (ratio), 1.0, 1.6);
     }
 
-    int kdeHandSplit (const std::vector<int>& windowPitches, int prior, int maxDriftSemis) noexcept
+    int kdeHandSplit (const std::vector<int>& windowPitches, int prior) noexcept
     {
         if (static_cast<int> (windowPitches.size()) < 4)
             return prior;
 
-        // Smoothed pitch density (Gaussian kernel, sigma ~2 semitones).
-        std::array<double, 128> dens {};
-        for (int p : windowPitches)
-        {
-            if (p < 0 || p > 127)
-                continue;
-            for (int k = -5; k <= 5; ++k)
-            {
-                const int q = p + k;
-                if (q >= 0 && q < 128)
-                    dens[static_cast<size_t> (q)] += std::exp (-(k * k) / 8.0); // 2*sigma^2 = 8
-            }
-        }
-
-        const int drift = std::max (1, maxDriftSemis);
-        const int lo = std::clamp (prior - drift, 1, 126);
-        const int hi = std::clamp (prior + drift, 1, 126);
-        if (lo >= hi)
+        std::vector<int> sortedPitches (windowPitches);
+        std::sort (sortedPitches.begin(), sortedPitches.end());
+        std::vector<int> distinct (sortedPitches);
+        distinct.erase (std::unique (distinct.begin(), distinct.end()), distinct.end());
+        if (distinct.size() < 2)
             return prior;
 
-        int best = prior;
-        double bestD = dens[static_cast<size_t> (std::clamp (prior, 0, 127))];
-        for (int s = lo; s <= hi; ++s)
+        // A genuine hand-split gap reads narrower than a 3rd in real piano
+        // writing almost never - below this, it's more likely spacing within
+        // one texture than two hands' worth of separate material.
+        constexpr int kMinGapSemis = 4;
+        // Guards against one stray outlier note faking a "cluster" on its
+        // own and swinging the split to an extreme (e.g. windowPitches =
+        // {60,61,62,63,100} - the biggest raw gap sits at the 100, but one
+        // note is not a real second hand's worth of content).
+        constexpr int kMinNotesPerSide = 2;
+
+        int bestGap = 0, bestMid = prior;
+        for (size_t i = 1; i < distinct.size(); ++i)
         {
-            const double d = dens[static_cast<size_t> (s)];
-            if (d < bestD - 1e-9
-                || (std::abs (d - bestD) < 1e-9 && std::abs (s - prior) < std::abs (best - prior)))
+            const int gap = distinct[i] - distinct[i - 1];
+            if (gap < kMinGapSemis)
+                continue;
+            const int mid = (distinct[i] + distinct[i - 1]) / 2;
+
+            const auto belowCount = std::count_if (sortedPitches.begin(), sortedPitches.end(),
+                [mid] (int p) { return p <= mid; });
+            const auto aboveCount = static_cast<int> (sortedPitches.size()) - belowCount;
+            if (belowCount < kMinNotesPerSide || aboveCount < kMinNotesPerSide)
+                continue;
+
+            if (gap > bestGap
+                || (gap == bestGap && std::abs (mid - prior) < std::abs (bestMid - prior)))
             {
-                bestD = d;
-                best = s;
+                bestGap = gap;
+                bestMid = mid;
             }
         }
-        return best;
+
+        return bestGap > 0 ? bestMid : prior;
     }
 
     FigureMatch detectFigure (const std::vector<std::vector<int>>& groupNotes,

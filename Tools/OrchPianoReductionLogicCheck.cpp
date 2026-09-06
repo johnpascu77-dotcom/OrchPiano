@@ -432,26 +432,60 @@ int main()
                "detectFigure: strict alternation wins over murmur when both would match");
     }
 
-    // --- Phase 5a: adaptive hand split (KDE) ---------------------
+    // --- Phase 5a: adaptive hand split -----------------------------
+    // 2026-09-07: rewritten from a smoothed-density valley (search window
+    // fixed to +/- a constant of the prior) to the largest real gap between
+    // actually-played pitches, with a real cluster on each side - see
+    // ocpn::kdeHandSplit's header comment for the live-found bug that
+    // motivated this (a fixed-width search window can be blind to a real
+    // gap that sits further from the prior than the window reaches).
     {
         // Too little data -> return the prior untouched.
         checkInt (kdeHandSplit ({ 40, 80 }, 60), 60, "kdeHandSplit: <4 notes returns the prior");
 
         // A clear two-cluster window (a bass around 48, a treble around 72,
-        // nothing near 60) -> the split lands in the empty zone near the prior.
+        // nothing near 60) -> the split lands in the gap between the two clusters.
         std::vector<int> twoClusters { 45, 46, 48, 48, 50, 70, 72, 72, 74, 76 };
         const int s = kdeHandSplit (twoClusters, 60);
         check (s >= 55 && s <= 65, "kdeHandSplit: split falls in the gap between the two clusters");
 
-        // Constrained to +/- drift of the prior.
+        // No real gap anywhere (a single dense low run, largest step is a
+        // whole tone) -> no genuine hand-split boundary exists, stay at prior.
         std::vector<int> allLow { 30, 32, 34, 34, 36, 38, 40 };
-        const int s2 = kdeHandSplit (allLow, 60, 9);
-        check (std::abs (s2 - 60) <= 9, "kdeHandSplit: never drifts more than maxDriftSemis from the prior");
+        const int s2 = kdeHandSplit (allLow, 60);
+        checkInt (s2, 60, "kdeHandSplit: no qualifying gap anywhere -> prior unchanged");
 
-        // A window whose valley sits right at the prior keeps the prior.
+        // A window whose gap sits right at the prior keeps the prior.
         std::vector<int> gapAt60 { 52, 53, 55, 56, 64, 65, 67, 68 };
         const int s3 = kdeHandSplit (gapAt60, 60);
-        check (std::abs (s3 - 60) <= 3, "kdeHandSplit: a valley at the prior keeps the split near it");
+        check (std::abs (s3 - 60) <= 3, "kdeHandSplit: a gap at the prior keeps the split near it");
+
+        // One stray outlier note must not fake a "cluster" and swing the
+        // split to an extreme - the biggest raw gap sits right next to 100,
+        // but a single note there is not a real second hand's worth of content.
+        std::vector<int> outlier { 60, 61, 62, 63, 100 };
+        const int s4 = kdeHandSplit (outlier, 60);
+        checkInt (s4, 60, "kdeHandSplit: a lone outlier note doesn't hijack the split");
+
+        // 2026-09-07: THE REAL BUG - Grieg's "Morning Mood" opening. A
+        // sustained E-major wind chord (E2/B2/E3/G#3 = 52/59/64/68, an
+        // octave-plus stack) under a flute melody starting an octave above
+        // it (76-83). The true gap (68 to 76) sits 8-16 semitones from the
+        // default prior (60) - the OLD fixed +/-9 window never reached it,
+        // so it could only find a spurious dip INSIDE the chord itself
+        // (confirmed live: 3 of the chord's 4 notes ended up sharing the
+        // melody's hand and got wiped out by the over-span guard, collapsing
+        // a real E-major chord down to a single bass note). The new gap-
+        // based search must land the split BETWEEN the chord and the
+        // melody, keeping the whole chord together.
+        std::vector<int> griegChord { 52, 59, 64, 68 };
+        std::vector<int> griegMelody { 76, 78, 80, 81, 83 };
+        std::vector<int> griegPhrase = griegChord;
+        griegPhrase.insert (griegPhrase.end(), griegMelody.begin(), griegMelody.end());
+        const int s5 = kdeHandSplit (griegPhrase, 60);
+        check (s5 > 68 && s5 < 76,
+               "kdeHandSplit: Grieg opening - splits between the wind chord and the flute melody, "
+               "not inside the chord (got " + std::to_string (s5) + ")");
     }
 
     std::cout << "---------------------------\n";
