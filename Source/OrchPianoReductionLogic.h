@@ -185,14 +185,34 @@ namespace ocpn
     // groups; notated it is two notes/chords with a tremolo beam, or one note.
     // Detect the pattern over a run of upcoming groups so the planning engine
     // can collapse it to held notes + a marker.
+    //
+    // 2026-09-06 (Phase 5c-2c): added Murmur - a fast, narrow-band figure that
+    // doesn't strictly alternate between exactly two pitch sets (a genuine
+    // orchestral accompaniment figure - a "rocking"/bariolage bass line
+    // outlining a harmony - typically touches 3+ neighbouring pitches in some
+    // irregular order, not a clean A-B-A-B). Live-found on Grieg's "Morning
+    // Mood": the Cellos play a rapid figure oscillating among F#2/G#2/A2/B2
+    // under a sustained horn pedal (bars ~20-28) - too irregular to match the
+    // existing strict alternation, so it passed through the reduction almost
+    // literally, sounding like erratic "semitonal shifting" on piano. Checked
+    // the professional MuseScore piano reduction of this exact passage as
+    // ground truth rather than guessing a treatment: its left hand renders
+    // this figure as a plain STATIC HELD CHORD outlining the harmony, not a
+    // literal fast repetition - the same idea Tremolo already applies (hold
+    // the touched pitches, drop the repeats), just generalised past a strict
+    // 2-set alternation to "stays within a narrow band" instead.
 
-    enum class FigureType { None = 0, Tremolo, RepeatedNote };
+    enum class FigureType { None = 0, Tremolo, RepeatedNote, Murmur };
 
     struct FigureMatch
     {
         FigureType type = FigureType::None;
         int    groups    = 0;     // onset groups the run spans
         double spanBeats = 0.0;   // total musical duration of the run
+        // Murmur only: every distinct pitch touched across the run, sorted +
+        // deduped - the chord to hold. Empty for Tremolo/RepeatedNote (the
+        // caller already has groupNotes[0]/[1] for those).
+        std::vector<int> unionPitches;
     };
 
     // `groupNotes` = a sequence of ascending, de-duplicated pitch lists;
@@ -200,10 +220,20 @@ namespace ocpn
     // starts at index 0: a run of >= `minGroups` groups at a regular interval
     // <= `maxIntervalBeats`, alternating between two pitch sets A (even) and B
     // (odd). A == B -> RepeatedNote, else Tremolo.
+    //
+    // If that strict alternation doesn't match and `maxMurmurSpanSemis > 0`,
+    // also tries Murmur: a run of >= `minGroups` groups at the same regular-
+    // interval tolerance, where every pitch touched so far stays within
+    // `maxMurmurSpanSemis` semitones of each other (a genuinely WIDE arpeggio
+    // that exceeds a hand's span is a different, not-yet-built case -
+    // arpeggioRespace - so this stays deliberately narrow, e.g. 7 = a 5th).
+    // `maxMurmurSpanSemis <= 0` skips the Murmur check entirely (existing
+    // callers/tests that don't pass it see no behaviour change).
     FigureMatch detectFigure (const std::vector<std::vector<int>>& groupNotes,
                               const std::vector<double>& onsets,
                               double maxIntervalBeats,
-                              int minGroups);
+                              int minGroups,
+                              int maxMurmurSpanSemis = 0);
 
     // Estimate 0..1 how hard an n-note chord spanning `spanSemis` is for one
     // hand (streaming proxy: count + span; the planning engine adds a

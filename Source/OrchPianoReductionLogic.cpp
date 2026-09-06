@@ -752,7 +752,8 @@ namespace ocpn
     FigureMatch detectFigure (const std::vector<std::vector<int>>& groupNotes,
                               const std::vector<double>& onsets,
                               double maxIntervalBeats,
-                              int minGroups)
+                              int minGroups,
+                              int maxMurmurSpanSemis)
     {
         FigureMatch m;
         const int n = static_cast<int> (groupNotes.size());
@@ -779,12 +780,63 @@ namespace ocpn
             ++run;
         }
 
-        if (run < minGroups)
+        if (run >= minGroups)
+        {
+            m.groups    = run;
+            m.spanBeats = (onsets[static_cast<size_t> (run - 1)] - onsets[0]) + iv0;
+            m.type      = (A == B) ? FigureType::RepeatedNote : FigureType::Tremolo;
             return m;
+        }
 
-        m.groups    = run;
-        m.spanBeats = (onsets[static_cast<size_t> (run - 1)] - onsets[0]) + iv0;
-        m.type      = (A == B) ? FigureType::RepeatedNote : FigureType::Tremolo;
+        // Murmur: the strict A-B-A-B alternation above didn't reach minGroups
+        // (a genuine narrow-band accompaniment figure rarely repeats exactly
+        // two pitch sets - it wanders among 3+ neighbouring pitches). Retry
+        // with the same interval-regularity requirement, but track the
+        // RUNNING union of every pitch touched so far instead of matching a
+        // fixed A/B pair - the run continues as long as that union stays
+        // within maxMurmurSpanSemis semitones (a genuinely wide arpeggio that
+        // exceeds a hand's span is the separate, not-yet-built
+        // arpeggioRespace case, so this stays deliberately narrow).
+        if (maxMurmurSpanSemis > 0)
+        {
+            int lo = A.front(), hi = A.front();
+            for (int p : A) { lo = std::min (lo, p); hi = std::max (hi, p); }
+
+            int mrun = 1;
+            for (int i = 1; i < n; ++i)
+            {
+                const double iv = onsets[static_cast<size_t> (i)] - onsets[static_cast<size_t> (i - 1)];
+                if (iv <= 1.0e-6 || iv > maxIntervalBeats || std::abs (iv - iv0) > 0.35 * iv0)
+                    break;
+                const auto& g = groupNotes[static_cast<size_t> (i)];
+                if (g.empty())
+                    break;
+
+                int newLo = lo, newHi = hi;
+                for (int p : g) { newLo = std::min (newLo, p); newHi = std::max (newHi, p); }
+                if (newHi - newLo > maxMurmurSpanSemis)
+                    break;
+
+                lo = newLo; hi = newHi;
+                ++mrun;
+            }
+
+            if (mrun >= minGroups)
+            {
+                std::vector<int> uni;
+                for (int i = 0; i < mrun; ++i)
+                    for (int p : groupNotes[static_cast<size_t> (i)])
+                        uni.push_back (p);
+                std::sort (uni.begin(), uni.end());
+                uni.erase (std::unique (uni.begin(), uni.end()), uni.end());
+
+                m.groups       = mrun;
+                m.spanBeats    = (onsets[static_cast<size_t> (mrun - 1)] - onsets[0]) + iv0;
+                m.type         = FigureType::Murmur;
+                m.unionPitches = std::move (uni);
+            }
+        }
+
         return m;
     }
 }

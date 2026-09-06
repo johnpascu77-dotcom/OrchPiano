@@ -165,13 +165,18 @@ private:
     };
     std::vector<PendingRestrike> pendingRestrikes;
 
-    // ---- Phase 5c-2: figuration (tremolo / repeated note) collapse ----
+    // ---- Phase 5c-2: figuration (tremolo / repeated note / murmur) collapse ----
     // A detected figure is emitted as its first 1-2 chords held to `figureEndPpq`
     // (re-struck by maxRingBeats); the repeats are consumed. The held notes have
     // no buffered note-off (it is consumed too), so a hard-off releases them.
     double figureEndPpq = -1.0e18;
     std::vector<int> figSetA, figSetB;      // sorted pitch lists
     int figGroupsToEmit = 0;
+    // 2026-09-06 (Phase 5c-2c): which kind of figure is currently held - a
+    // Murmur group is usually a single note out of the larger held chord
+    // (figSetA), not an exact match to it, so membership needs to be tested
+    // differently (subset, not set equality) than Tremolo/RepeatedNote.
+    ocpn::FigureType currentFigureType = ocpn::FigureType::None;
     struct PendingHardOff { int outCh = 0, pitch = 0; double ppq = 0.0; };
     std::vector<PendingHardOff> pendingHardOffs;
     void resetFigureState();

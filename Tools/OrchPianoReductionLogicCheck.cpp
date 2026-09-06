@@ -391,6 +391,45 @@ int main()
         std::vector<double> tno { 0.0, 0.25, 0.5, 0.75 };
         check (detectFigure (turn, tno, 0.4, 8).type == FigureType::None,
                "detectFigure: a 4-hit melodic turn is NOT a tremolo under the real minGroups=8 floor");
+
+        // 2026-09-06 (Phase 5c-2c): live-found on Grieg's "Morning Mood" - the
+        // Cellos play a fast figure oscillating among F#2/G#2/A2/B2 (54/56/
+        // 57/59, a 5-semitone span) under a sustained horn pedal. It never
+        // strictly alternates between exactly two pitch sets, so it fell
+        // through the existing Tremolo/RepeatedNote check untouched and
+        // played back as erratic-sounding "semitonal shifting" on piano. The
+        // shape below is representative of the real figure (irregular order,
+        // narrow band, 8+ hits at a steady interval).
+        std::vector<std::vector<int>> murm { {54}, {56}, {57}, {54}, {56}, {59}, {54}, {57} };
+        std::vector<double> mo { 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4 };
+        const auto fm = detectFigure (murm, mo, 0.4, 8, 7);
+        check (fm.type == FigureType::Murmur,
+               "detectFigure: a narrow-band non-alternating figure -> Murmur");
+        checkInt (fm.groups, 8, "detectFigure: murmur spans all 8 hits");
+        check (eq (fm.unionPitches, { 54, 56, 57, 59 }),
+               "detectFigure: murmur's held chord is every distinct pitch touched");
+
+        // maxMurmurSpanSemis <= 0 (the default) keeps every existing caller's
+        // behaviour unchanged - no Murmur classification is attempted at all.
+        check (detectFigure (murm, mo, 0.4, 8).type == FigureType::None,
+               "detectFigure: murmur detection is off unless maxMurmurSpanSemis is passed");
+
+        // A genuinely wide, non-alternating spread (here 30 semitones) must
+        // NOT be swept into Murmur just because it doesn't strictly alternate
+        // between two pitch sets - that's the separate, not-yet-built
+        // arpeggioRespace case (an arpeggio too wide for one hand), not a
+        // narrow accompaniment figure to hold as a chord.
+        std::vector<std::vector<int>> wide { {40}, {52}, {64}, {40}, {55}, {70}, {42}, {58} };
+        std::vector<double> wo { 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4 };
+        check (detectFigure (wide, wo, 0.4, 8, 7).type == FigureType::None,
+               "detectFigure: a wide non-alternating spread is NOT swept into murmur");
+
+        // Strict alternation takes priority over Murmur when both would
+        // technically match - a real tremolo shouldn't be reclassified just
+        // because maxMurmurSpanSemis happens to be passed in too.
+        const auto fPriority = detectFigure (trem, tro, 0.6, 4, 7);
+        check (fPriority.type == FigureType::Tremolo,
+               "detectFigure: strict alternation wins over murmur when both would match");
     }
 
     // --- Phase 5a: adaptive hand split (KDE) ---------------------

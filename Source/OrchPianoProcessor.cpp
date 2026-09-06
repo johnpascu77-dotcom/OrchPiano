@@ -251,6 +251,7 @@ void OrchPianoAudioProcessor::resetFigureState()
     figSetA.clear();
     figSetB.clear();
     figGroupsToEmit = 0;
+    currentFigureType = ocpn::FigureType::None;
     pendingHardOffs.clear();
 }
 
@@ -768,13 +769,33 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 // 0.4-beat max interval) to require that distinction before
                 // collapsing anything.
                 constexpr int kMinFigureGroups = 8;
-                const auto fig = ocpn::detectFigure (gN, gO, kMaxFigIntervalBeats, kMinFigureGroups);
+                // 2026-09-06 (Phase 5c-2c): narrow-band "murmur" figures (see
+                // ocpn::detectFigure's header comment) - a genuinely wide
+                // arpeggio that exceeds a hand's span is the separate,
+                // not-yet-built arpeggioRespace case, so this stays inside
+                // roughly a 5th (7 semitones): wide enough for the real Grieg
+                // Cello figure that motivated this (a 5-semitone span), not so
+                // wide it starts swallowing a texture that actually needs
+                // re-spacing rather than a static held chord.
+                constexpr int kMaxMurmurSpanSemis = 7;
+                const auto fig = ocpn::detectFigure (gN, gO, kMaxFigIntervalBeats, kMinFigureGroups,
+                                                     kMaxMurmurSpanSemis);
+                currentFigureType = fig.type;
                 if (fig.type != ocpn::FigureType::None)
                 {
-                    figureEndPpq    = gp + fig.spanBeats;
-                    figSetA         = gN[0];
-                    figSetB         = (fig.type == ocpn::FigureType::Tremolo && gN.size() > 1) ? gN[1] : gN[0];
-                    figGroupsToEmit = (fig.type == ocpn::FigureType::Tremolo) ? 2 : 1;
+                    figureEndPpq = gp + fig.spanBeats;
+                    if (fig.type == ocpn::FigureType::Murmur)
+                    {
+                        figSetA         = fig.unionPitches;   // already sorted + deduped
+                        figSetB         = figSetA;
+                        figGroupsToEmit = 1;
+                    }
+                    else
+                    {
+                        figSetA         = gN[0];
+                        figSetB         = (fig.type == ocpn::FigureType::Tremolo && gN.size() > 1) ? gN[1] : gN[0];
+                        figGroupsToEmit = (fig.type == ocpn::FigureType::Tremolo) ? 2 : 1;
+                    }
                     if (doLog)
                     {
                         auto setStr = [] (const std::vector<int>& s)
@@ -783,11 +804,15 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                             for (int p : s) r << (r.isEmpty() ? "" : "+") << juce::MidiMessage::getMidiNoteName (p, true, true, 3);
                             return r;
                         };
-                        logEvent (gp, juce::String (fig.type == ocpn::FigureType::Tremolo ? "tremolo  " : "repeated ")
+                        const char* label = fig.type == ocpn::FigureType::Tremolo  ? "tremolo  "
+                                          : fig.type == ocpn::FigureType::Murmur   ? "murmur   "
+                                                                                    : "repeated ";
+                        logEvent (gp, juce::String (label)
                                       + setStr (figSetA)
                                       + (fig.type == ocpn::FigureType::Tremolo ? (" ~ " + setStr (figSetB)) : juce::String())
                                       + "  (" + juce::String (fig.groups) + " hits, "
-                                      + juce::String (fig.spanBeats, 1) + " beats) -> held");
+                                      + juce::String (fig.spanBeats, 1) + " beats) -> held"
+                                      + (fig.type == ocpn::FigureType::Murmur ? " chord" : juce::String()));
                     }
                 }
                 else
@@ -847,7 +872,13 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             pset.erase (std::unique (pset.begin(), pset.end()), pset.end());
 
             const bool inFigure = gp < figureEndPpq - 1.0e-6;
-            const bool isFigGroup = inFigure && (pset == figSetA || pset == figSetB);
+            // Murmur groups are typically a single note out of a larger held
+            // chord (figSetA), not an exact match to it - subset membership,
+            // not set equality (both sides are sorted + deduped already).
+            const bool isFigGroup = inFigure
+                && (currentFigureType == ocpn::FigureType::Murmur
+                    ? std::includes (figSetA.begin(), figSetA.end(), pset.begin(), pset.end())
+                    : (pset == figSetA || pset == figSetB));
 
             // Apply whatever interleaved (non-note-on) messages were skipped
             // over, in their original order, before the chord they didn't
