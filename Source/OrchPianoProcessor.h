@@ -177,6 +177,14 @@ private:
     // (figSetA), not an exact match to it, so membership needs to be tested
     // differently (subset, not set equality) than Tremolo/RepeatedNote.
     ocpn::FigureType currentFigureType = ocpn::FigureType::None;
+    // 2026-09-06: the exact (channel, inputNote) identities of the attacks
+    // consumed into the currently-held figure - NOT just their pitches. A
+    // pitch-only note-off suppression check wrongly swallowed a completely
+    // unrelated instrument's note-off whenever it happened to share a pitch
+    // with the held figure (live-found: a real Horns pedal note ending while
+    // a same-pitch Cello murmur figure nearby was still active - its own
+    // release got silently eaten, leaving its output note ringing for bars).
+    std::vector<std::pair<int, int>> figConsumedIdentities;
     struct PendingHardOff { int outCh = 0, pitch = 0; double ppq = 0.0; };
     std::vector<PendingHardOff> pendingHardOffs;
     void resetFigureState();
@@ -214,9 +222,19 @@ private:
     double sampleRate = 44100.0;
     bool wasPlaying = false;
 
-    // ---- bar clock (for the decision log) ----
+    // ---- bar clock (for the decision log, and maxRingBeats bar-snapping) ----
     double integratedPpq = 0.0;
     double beatsPerBar = 4.0;
+
+    // 2026-09-06: a maxRingBeats re-strike due at `ppq` is pushed forward to
+    // the start of the next bar at or after it - see the call sites' comment
+    // for why (a fixed beat-count re-strike drifts through the bar whenever
+    // maxRingBeats isn't a multiple of the meter, e.g. 4 beats in a 3-beat
+    // 6/8 bar - live-found on Grieg's "Morning Mood": the re-strike landed at
+    // a different, arbitrary offset every cycle, which Dorico respelled as a
+    // repeating tied dotted-half-to-eighth figure that sounded like a random
+    // restatement rather than a clean, deliberate one).
+    double snapUpToBar (double ppq) const noexcept;
 
     // ---- decision-log sidecar (OrchHarp MarkerWriter pattern) ----
     struct LogWriter;

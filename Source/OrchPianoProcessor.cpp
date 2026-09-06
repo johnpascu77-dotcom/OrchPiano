@@ -245,6 +245,13 @@ void OrchPianoAudioProcessor::resetVoiceLines()
             l[i] = {};
 }
 
+double OrchPianoAudioProcessor::snapUpToBar (double ppq) const noexcept
+{
+    const double bpb = juce::jmax (1.0, beatsPerBar);
+    const double bar = std::ceil (ppq / bpb - 1.0e-6);   // already-on-a-boundary stays put
+    return bar * bpb;
+}
+
 void OrchPianoAudioProcessor::resetFigureState()
 {
     figureEndPpq = -1.0e18;
@@ -252,6 +259,7 @@ void OrchPianoAudioProcessor::resetFigureState()
     figSetB.clear();
     figGroupsToEmit = 0;
     currentFigureType = ocpn::FigureType::None;
+    figConsumedIdentities.clear();
     pendingHardOffs.clear();
 }
 
@@ -623,8 +631,14 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             // whether the note is still actually ringing when the checkpoint
             // arrives - correct regardless of how long the note turns out to
             // be, lookahead window or not.
+            // 2026-09-06: the checkpoint is snapped forward to the next bar
+            // boundary rather than left at the raw groupPpq+maxRing offset -
+            // see snapUpToBar's header comment. Landing exactly on a downbeat
+            // is what makes a re-strike read as a deliberate restatement
+            // instead of a stray extra note.
             if (maxRing > 0)
-                pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel, groupPpq + maxRing, emitSeq });
+                pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel,
+                                              snapUpToBar (groupPpq + maxRing), emitSeq });
 
             (voice[ki] == 2 ? line2Emit : (voice[ki] == 1 ? line1Emit : line0Emit)) = pitch;
 
@@ -737,6 +751,12 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             {
                 std::vector<std::vector<int>> gN;
                 std::vector<double> gO;
+                // Parallel to gN (same indices, NOT sorted/deduped like gN
+                // below) - which (channel, inputNote) actually produced each
+                // pitch. Needed so a figure only ever suppresses the note-offs
+                // of the SPECIFIC attacks it consumed - see the note-off
+                // handling below for why pitch alone isn't enough.
+                std::vector<std::vector<std::pair<int, int>>> gIdent;
                 double curPpq = -1.0e18;
                 for (const auto& e : planBuf)
                 {
@@ -746,10 +766,12 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                     {
                         if (gN.size() >= 20) break;
                         gN.emplace_back();
+                        gIdent.emplace_back();
                         gO.push_back (e.ppq);
                         curPpq = e.ppq;
                     }
                     gN.back().push_back (e.msg.getNoteNumber());
+                    gIdent.back().push_back ({ e.msg.getChannel(), e.msg.getNoteNumber() });
                 }
                 for (auto& g : gN) { std::sort (g.begin(), g.end()); g.erase (std::unique (g.begin(), g.end()), g.end()); }
 
@@ -784,6 +806,22 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 if (fig.type != ocpn::FigureType::None)
                 {
                     figureEndPpq = gp + fig.spanBeats;
+                    // 2026-09-06: record exactly which (channel, inputNote)
+                    // attacks were consumed into this figure, spanning only
+                    // the CONFIRMED run (fig.groups) - the loop above may have
+                    // buffered more groups than actually matched. Live-found
+                    // bug: the note-off suppression below used to test pitch
+                    // membership in the held chord alone, which for a Murmur
+                    // figure's broad multi-pitch union coincidentally matched
+                    // a completely unrelated instrument's note-off sharing one
+                    // of those pitches (a real Horns A2 pedal note ending
+                    // right as a same-pitch Cello murmur figure was active) -
+                    // silently swallowing that unrelated note's OWN release
+                    // and leaving its output note ringing indefinitely.
+                    figConsumedIdentities.clear();
+                    for (int gi = 0; gi < fig.groups && gi < static_cast<int> (gIdent.size()); ++gi)
+                        for (const auto& id : gIdent[static_cast<size_t> (gi)])
+                            figConsumedIdentities.push_back (id);
                     if (fig.type == ocpn::FigureType::Murmur)
                     {
                         figSetA         = fig.unionPitches;   // already sorted + deduped
@@ -835,7 +873,6 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             // notes", not OrchMerge relay jitter (which was a real, separate,
             // smaller issue, already fixed there).
             std::vector<HeldOn> group;
-            std::vector<int> pset;
             std::vector<size_t> interleaved; // non-note-on entries within the window
             size_t n = 0;
             while (n < planBuf.size()
@@ -865,20 +902,24 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                     }
                 }
                 group.push_back ({ m.getChannel(), m.getNoteNumber(), m.getVelocity(), 0, durTicks });
-                pset.push_back (m.getNoteNumber());
                 ++n;
             }
-            std::sort (pset.begin(), pset.end());
-            pset.erase (std::unique (pset.begin(), pset.end()), pset.end());
 
             const bool inFigure = gp < figureEndPpq - 1.0e-6;
-            // Murmur groups are typically a single note out of a larger held
-            // chord (figSetA), not an exact match to it - subset membership,
-            // not set equality (both sides are sorted + deduped already).
-            const bool isFigGroup = inFigure
-                && (currentFigureType == ocpn::FigureType::Murmur
-                    ? std::includes (figSetA.begin(), figSetA.end(), pset.begin(), pset.end())
-                    : (pset == figSetA || pset == figSetB));
+            // 2026-09-06: matched by (channel, note) IDENTITY against
+            // figConsumedIdentities (every attack captured into the figure at
+            // detection time), not by pitch-set membership - see that
+            // member's header comment. A pitch-only test couldn't tell "this
+            // IS one of the figure's own repeat attacks" from "an unrelated
+            // instrument happens to share a pitch with the held chord" -
+            // most exploitable by Murmur's broad multi-pitch union, but the
+            // same flaw existed for Tremolo/RepeatedNote too, just narrower.
+            const bool isFigGroup = inFigure && ! group.empty()
+                && std::all_of (group.begin(), group.end(), [this] (const HeldOn& h)
+                    {
+                        return std::find (figConsumedIdentities.begin(), figConsumedIdentities.end(),
+                                          std::make_pair (h.channel, h.note)) != figConsumedIdentities.end();
+                    });
 
             // Apply whatever interleaved (non-note-on) messages were skipped
             // over, in their original order, before the chord they didn't
@@ -907,10 +948,18 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
         }
         else if (front.msg.isNoteOff())
         {
+            // 2026-09-06: matched by (channel, note) IDENTITY, not pitch
+            // alone - see figConsumedIdentities' comment above. A pitch-only
+            // test wrongly suppressed a completely unrelated instrument's
+            // note-off whenever it happened to share a pitch with the held
+            // figure (only really likely for Murmur's broad multi-pitch
+            // union; Tremolo/RepeatedNote's tight 1-2 pitch sets made this
+            // rare in practice, but the fix is the same for all three).
             const int offNote = front.msg.getNoteNumber();
+            const int offCh   = front.msg.getChannel();
             const bool figOff = front.ppq < figureEndPpq - 1.0e-6
-                && (std::find (figSetA.begin(), figSetA.end(), offNote) != figSetA.end()
-                 || std::find (figSetB.begin(), figSetB.end(), offNote) != figSetB.end());
+                && std::find (figConsumedIdentities.begin(), figConsumedIdentities.end(),
+                              std::make_pair (offCh, offNote)) != figConsumedIdentities.end();
             if (figOff)
             {
                 planBuf.erase (planBuf.begin());   // the figure holds this note
@@ -973,7 +1022,7 @@ void OrchPianoAudioProcessor::drainRestrikes (juce::MidiBuffer& output, double b
             if (doLog)
                 logEvent (it->nextPpq, "re-strike " + juce::MidiMessage::getMidiNoteName (it->pitch, true, true, 3)
                           + " (still ringing past " + juce::String (maxRingBeats) + " beats)");
-            it->nextPpq += step;
+            it->nextPpq = snapUpToBar (it->nextPpq + step);
         }
 
         if (! stillLive)
