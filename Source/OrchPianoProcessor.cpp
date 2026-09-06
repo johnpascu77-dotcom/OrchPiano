@@ -729,7 +729,22 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 for (auto& g : gN) { std::sort (g.begin(), g.end()); g.erase (std::unique (g.begin(), g.end()), g.end()); }
 
                 constexpr double kMaxFigIntervalBeats = 0.4;   // 16ths / 32nds
-                const auto fig = ocpn::detectFigure (gN, gO, kMaxFigIntervalBeats, 4);
+                // 2026-09-06: minGroups was 4 - live-found (real 6/8 melodic
+                // line, decision log) that a plain 4-note alternating figure
+                // (a neighbor-tone turn, an entirely ordinary melodic shape)
+                // matches detectFigure's tremolo pattern just as well as a
+                // real orchestral string tremolo does, and gets misclassified
+                // the same way: held as a sustained dyad, one note (the 3rd)
+                // silently eaten (figGroupsToEmit hits 0). This was flagged as
+                // a risk from the day this was built ("false-positive on fast
+                // scales, needs test") - confirmed live. Genuine tremolo
+                // reduction candidates run well past a beat of continuous
+                // alternation; a short melodic gesture like a turn or mordent
+                // does not. Raised to 8 (>= ~2 beats of alternation at the
+                // 0.4-beat max interval) to require that distinction before
+                // collapsing anything.
+                constexpr int kMinFigureGroups = 8;
+                const auto fig = ocpn::detectFigure (gN, gO, kMaxFigIntervalBeats, kMinFigureGroups);
                 if (fig.type != ocpn::FigureType::None)
                 {
                     figureEndPpq    = gp + fig.spanBeats;

@@ -376,6 +376,21 @@ int main()
         std::vector<std::vector<int>> brk { {60}, {72}, {60}, {72}, {65}, {72} };
         std::vector<double> bro { 0.0, 0.25, 0.5, 0.75, 1.0, 1.25 };
         checkInt (detectFigure (brk, bro, 0.4, 4).groups, 4, "detectFigure: run stops at the first mismatch");
+
+        // 2026-09-06: live-found on a real 6/8 melodic line (decision log,
+        // OrchPianoProcessor's call site) - a plain 4-note alternating
+        // neighbor-tone figure (an entirely ordinary melodic shape, NOT an
+        // orchestral tremolo) matches this same alternating-pitch pattern at
+        // the same real-piano-note speed. OrchPianoProcessor.cpp's real call
+        // site raised its minGroups from 4 to 8 specifically so a short
+        // melodic gesture like this no longer qualifies (a genuine tremolo
+        // reduction candidate runs well past a beat of continuous
+        // alternation; four notes does not). This is that exact real figure,
+        // confirming it correctly falls below the new floor.
+        std::vector<std::vector<int>> turn { {73}, {75}, {73}, {75} };   // C#5 ~ D#5, 4 hits
+        std::vector<double> tno { 0.0, 0.25, 0.5, 0.75 };
+        check (detectFigure (turn, tno, 0.4, 8).type == FigureType::None,
+               "detectFigure: a 4-hit melodic turn is NOT a tremolo under the real minGroups=8 floor");
     }
 
     // --- Phase 5a: adaptive hand split (KDE) ---------------------
