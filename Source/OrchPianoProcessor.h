@@ -107,8 +107,13 @@ private:
         int inputNote = 0;
         int outputNote = -1;   // emitted pitch, -1 dropped, -2 already damped
         int outputChannel = 0;
+        // 2026-09-06: which emission this entry IS - see PendingRestrike::seq.
+        // Left at -1 (never matches a real checkpoint) for entries that don't
+        // arm one (folded/octave-add).
+        juce::int64 seq = -1;
     };
     std::vector<TrackedNote> activeNotes;
+    juce::int64 nextNoteSeq = 1;   // monotonic; 0 never issued, so 0 stays "no seq"
 
     // ---- Phase 5b-2/6: per-line voice state (planning engine, per phrase) --
     // Index 2 (line 2) is only ever written when "Max Voices" = 6 raises the
@@ -134,10 +139,29 @@ private:
     // actually ringing when each checkpoint arrives, re-striking and
     // rescheduling indefinitely for as long as it is - correct regardless of
     // whether the note's eventual true length was ever knowable in advance.
+    //
+    // 2026-09-06 (second live-found bug, same day): (channel, inputNote,
+    // outputChannel, outputNote) is NOT a unique identity for a genuinely
+    // repeated note (a real fast repeated bass figure / roll, not a single
+    // sustain) - the SAME 4 values recur on every strike. Matching only on
+    // that tuple meant an OLD checkpoint, armed for one specific strike that
+    // had already ended cleanly via its own real note-off, could spuriously
+    // match a LATER, unrelated strike's activeNotes entry (identical tuple,
+    // different note) and conclude "still live" - re-striking forever and
+    // compounding, since every subsequent strike arms its OWN checkpoint too.
+    // Confirmed live: a real repeated A2 in Grieg's "Morning Mood" produced a
+    // cascading, ever-growing flood of "re-strike A2" every ~1/12 bar instead
+    // of periodic re-strikes on one genuine sustain. `seq` disambiguates:
+    // each emission gets a unique id shared between its TrackedNote and its
+    // PendingRestrike, so a checkpoint only ever matches the EXACT occurrence
+    // it was armed for, and self-terminates the moment that specific
+    // occurrence's own entry is gone - regardless of how many other,
+    // identically-pitched occurrences are active at the same instant.
     struct PendingRestrike
     {
         int outCh = 0, pitch = 0, inCh = 0, inNote = 0, vel = 100;
         double nextPpq = 0.0;
+        juce::int64 seq = 0;
     };
     std::vector<PendingRestrike> pendingRestrikes;
 

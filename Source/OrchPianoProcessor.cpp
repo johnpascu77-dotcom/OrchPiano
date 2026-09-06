@@ -592,7 +592,11 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
                 juce::roundToInt (subVel[static_cast<size_t> (idx)] * velScale));
 
             output.addEvent (juce::MidiMessage::noteOn (outCh, pitch, static_cast<juce::uint8> (vel)), sample);
-            activeNotes.push_back ({ src.channel, inPitch, pitch, outCh });
+            // seq: this emission's unique id - see PendingRestrike's comment
+            // in the header for why (channel, inputNote, outCh, pitch) alone
+            // is not enough to identify a specific occurrence of a repeated note.
+            const juce::int64 emitSeq = nextNoteSeq++;
+            activeNotes.push_back ({ src.channel, inPitch, pitch, outCh, emitSeq });
 
             // A collapsed-figure note holds to figureReleasePpq and has no
             // buffered note-off (it is consumed) - schedule a hard release.
@@ -619,7 +623,7 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
             // arrives - correct regardless of how long the note turns out to
             // be, lookahead window or not.
             if (maxRing > 0)
-                pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel, groupPpq + maxRing });
+                pendingRestrikes.push_back ({ outCh, pitch, src.channel, inPitch, vel, groupPpq + maxRing, emitSeq });
 
             (voice[ki] == 2 ? line2Emit : (voice[ki] == 1 ? line1Emit : line0Emit)) = pitch;
 
@@ -913,12 +917,19 @@ void OrchPianoAudioProcessor::drainRestrikes (juce::MidiBuffer& output, double b
         // as the note is genuinely still live, checked fresh each time
         // against activeNotes (never against a precomputed "expected end",
         // which is exactly what silently missed the bug this fixes).
+        //
+        // Matched by `seq`, NOT just the (channel, inputNote, outCh, pitch)
+        // tuple - see PendingRestrike's header comment. For a genuinely
+        // repeated note (real fast repeated figure, not one sustain), that
+        // tuple recurs on every strike; matching on it alone let a checkpoint
+        // for one long-since-ended strike falsely latch onto a LATER,
+        // unrelated strike's activeNotes entry and re-fire forever.
         bool stillLive = true;
         while (stillLive && it->nextPpq <= cutoff)
         {
             bool live = false;
             for (const auto& t : activeNotes)
-                if (t.outputNote == it->pitch && t.outputChannel == it->outCh
+                if (t.seq == it->seq && t.outputNote == it->pitch && t.outputChannel == it->outCh
                     && t.channel == it->inCh && t.inputNote == it->inNote)
                     { live = true; break; }
             if (! live) { stillLive = false; break; }
