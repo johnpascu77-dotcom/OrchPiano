@@ -435,12 +435,13 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
     w.velocity = wVelocityParam != nullptr ? wVelocityParam->load() : 0.5f;
     w.doublePenalty = wDoubleParam != nullptr ? wDoubleParam->load() : 1.0f;
 
-    // --- roles + importance on the whole group ---
+    // --- melody/bass identified on the whole group, but roles + importance
+    // recomputed PER HAND below (2026-09-07 fix - see the per-hand loop's
+    // comment for the real bug this replaced) ---
     const int melIdx  = ocpn::melodyIndex (notes, vels);
     const int bassIdx = ocpn::bassIndex (notes);
-    const auto roles  = ocpn::tagRoles (notes, melIdx, bassIdx);
-    const auto imp    = ocpn::importanceScores (notes, vels, roles, prevKeptNotes, w,
-                                                haveDur ? durs : std::vector<int> {});
+    const int groupMelodyPitch = melIdx  >= 0 ? notes[static_cast<size_t> (melIdx)]  : -1;
+    const int groupBassPitch   = bassIdx >= 0 ? notes[static_cast<size_t> (bassIdx)] : -1;
 
     const auto handAssign = ocpn::assignHands (notes, splitNote, slack, prevGroupNotes, prevGroupHands);
 
@@ -468,19 +469,44 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
         if (handsMode == 2 && hand != 2) continue;
 
         std::vector<int> sub, subVel, subDur;
-        std::vector<ocpn::Role> subRoles;
-        std::vector<double> subImp;
         for (size_t i = 0; i < notes.size(); ++i)
         {
             if (handAssign[i] != hand) continue;
             sub.push_back (notes[i]);
             subVel.push_back (vels[i]);
             subDur.push_back (durs[i]);
-            subRoles.push_back (roles[i]);
-            subImp.push_back (imp[i]);
         }
         if (sub.empty())
             continue;
+
+        // 2026-09-07: roles (and therefore importance) are now tagged FRESH
+        // on this hand's own note list, not sliced from a role set computed
+        // on the whole (both-hands) group before the split. Live-found real
+        // bug on Grieg's "Morning Mood": the group-wide melodyIndex() picks
+        // the single overall highest note as melody (here, the flute an
+        // octave-plus above a sustained accompaniment chord) - correct for
+        // THAT note, but tagRoles' doubling pass then ALSO ran across the
+        // whole group, and flagged the chord's own 5th as "Doubling" purely
+        // because it shared a pitch CLASS with the melody note that was
+        // about to leave for the other hand entirely. The 5th then had no
+        // octave-doubling protection (unlike the chord's bass-octave note,
+        // protected by keepBassOctaves) and was dropped outright - collapsing
+        // a genuine chord down to a bare octave. A cross-hand pitch-class
+        // coincidence must not penalise a note for "redundancy" within a
+        // hand it doesn't even share. Re-deriving roles from ONLY this
+        // hand's own notes removes that false doubling entirely; the true
+        // melody/bass note (by pitch, found in `sub` if it landed here)
+        // still gets its role correctly, so the normal single-hand case is
+        // unaffected.
+        int subMelIdx  = -1, subBassIdx = -1;
+        for (size_t i = 0; i < sub.size(); ++i)
+        {
+            if (subMelIdx  < 0 && groupMelodyPitch >= 0 && sub[i] == groupMelodyPitch) subMelIdx  = static_cast<int> (i);
+            if (subBassIdx < 0 && groupBassPitch   >= 0 && sub[i] == groupBassPitch)   subBassIdx = static_cast<int> (i);
+        }
+        auto subRoles = ocpn::tagRoles (sub, subMelIdx, subBassIdx);
+        auto subImp   = ocpn::importanceScores (sub, subVel, subRoles, prevKeptNotes, w,
+                                                haveDur ? subDur : std::vector<int> {});
 
         // If the group's melody/bass didn't land in this hand, the top/bottom of
         // this hand's slice still gets protected as a local lead/anchor.
