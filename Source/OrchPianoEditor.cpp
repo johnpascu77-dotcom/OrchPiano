@@ -18,7 +18,7 @@ OrchPianoAudioProcessorEditor::OrchPianoAudioProcessorEditor (OrchPianoAudioProc
     // EVERY build (see GenerateBuildTimestamp.cmake) - unlike __DATE__/
     // __TIME__ baked into this one .cpp, it stays accurate even when an
     // incremental build only recompiled a different file for its own fix.
-    buildLabel.setText ("Build: maxRingBeats now checks LIVE state, not a precomputed (buffer-bounded) duration"
+    buildLabel.setText ("Build: handleNoteOff no longer cancels a live note's maxRingBeats checkpoint early"
                          "  |  compiled " ORCHPIANO_BUILD_TIMESTAMP, juce::dontSendNotification);
     buildLabel.setFont (juce::Font (juce::FontOptions (11.0f)));
     buildLabel.setColour (juce::Label::textColourId, juce::Colours::grey);

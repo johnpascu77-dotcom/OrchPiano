@@ -272,10 +272,22 @@ void OrchPianoAudioProcessor::handleNoteOff (const juce::MidiMessage& message, i
     const int ch = message.getChannel();
     const int note = message.getNoteNumber();
 
-    // A note that ends naturally: stop re-striking it.
-    pendingRestrikes.erase (std::remove_if (pendingRestrikes.begin(), pendingRestrikes.end(),
-        [ch, note] (const PendingRestrike& p) { return p.inCh == ch && p.inNote == note; }),
-        pendingRestrikes.end());
+    // 2026-09-06: no longer blindly erases pendingRestrikes by the INPUT
+    // note's identity here - live-found bug. When a short input attack gets
+    // "promoted" into a continuing held voice (streamHandVoices), that SAME
+    // short input still has its own natural, quick note-off arriving on
+    // schedule. It correctly does NOT release the (deliberately still-
+    // ringing) output note - activeNotes below only erases on an actual
+    // match - but the old unconditional erase-by-input-identity ran
+    // regardless of that, silently cancelling the just-armed maxRingBeats
+    // checkpoint for a note that was about to become a long sustain.
+    // Confirmed via the decision log: zero re-strikes fired for a genuine
+    // ~55-beat Grieg pedal point despite the checkpoint being scheduled.
+    // No explicit cleanup is needed here at all: drainRestrikes already
+    // self-terminates a checkpoint correctly the moment activeNotes
+    // genuinely no longer contains a live match (proven by every OTHER
+    // re-strike in the same take working correctly) - this function only
+    // needs to get activeNotes right, which it already does below.
 
     for (auto it = activeNotes.begin(); it != activeNotes.end(); ++it)
     {
