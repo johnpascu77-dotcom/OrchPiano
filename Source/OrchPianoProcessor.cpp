@@ -642,6 +642,9 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
                                                  groupPpq + kTremoloStepBeats, figureReleasePpq,
                                                  kTremoloStepBeats, false });
                     scheduledAsTremolo = true;
+                    if (doLog)
+                        logEvent (groupPpq, "tremolo  scheduled " + nn (pitch) + " ~ " + nn (pitch + 12)
+                                  + "  (to bar-ppq " + juce::String (figureReleasePpq, 2) + ")");
                 }
             }
 
@@ -986,7 +989,20 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 if (isFigGroup)
                 {
                     releasePpq = figureEndPpq;
+                    // 2026-09-06: gated to a SINGLE repeated pitch only (the
+                    // real timpani-roll case) - user's explicit call after a
+                    // live-found near-miss: a repeated MULTI-note chord
+                    // (figSetA.size() > 1, e.g. a genuine "repeated D#4+E4"
+                    // dyad) would otherwise get each of its notes' own
+                    // octave-tremolo treatment independently, which can land
+                    // squarely on the same pitches as completely unrelated
+                    // real content nearby (confirmed live: a genuine
+                    // clarinet trill happened to sit exactly at the would-be
+                    // octave partners of that dyad - not this feature's own
+                    // output, but close enough to raise the exact collision
+                    // risk this guard avoids).
                     figureIsRoll = currentFigureType == ocpn::FigureType::RepeatedNote
+                        && figSetA.size() == 1
                         && repeatedNoteTremoloParam != nullptr && repeatedNoteTremoloParam->load() >= 0.5f;
                     --figGroupsToEmit;
                 }
@@ -1133,6 +1149,7 @@ void OrchPianoAudioProcessor::drainTremolos (juce::MidiBuffer& output, double bl
         return;
 
     const double cutoff = (blockStartPpq + numSamples * ppqPerSample) - lookaheadPpq;
+    const bool doLog = decisionLogParam != nullptr && decisionLogParam->load() >= 0.5f;
 
     for (auto it = pendingTremolos.begin(); it != pendingTremolos.end();)
     {
@@ -1160,6 +1177,9 @@ void OrchPianoAudioProcessor::drainTremolos (juce::MidiBuffer& output, double bl
                         break;
                     }
                 }
+                if (doLog)
+                    logEvent (it->nextPpq, "tremolo  ended, released "
+                              + juce::MidiMessage::getMidiNoteName (soundingPitch, true, true, 3));
                 finished = true;
                 break;
             }
@@ -1168,6 +1188,9 @@ void OrchPianoAudioProcessor::drainTremolos (juce::MidiBuffer& output, double bl
             output.addEvent (juce::MidiMessage::noteOff (it->outCh, soundingPitch), juce::jmax (0, s - 1));
             output.addEvent (juce::MidiMessage::noteOn (it->outCh, nextPitch,
                                                        static_cast<juce::uint8> (it->vel)), s);
+            if (doLog)
+                logEvent (it->nextPpq, "tremolo  alternate to "
+                          + juce::MidiMessage::getMidiNoteName (nextPitch, true, true, 3));
             it->highPhaseNow = ! it->highPhaseNow;
             it->nextPpq += it->stepBeats;
         }
