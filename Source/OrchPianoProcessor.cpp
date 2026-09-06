@@ -1020,8 +1020,17 @@ void OrchPianoAudioProcessor::drainRestrikes (juce::MidiBuffer& output, double b
             output.addEvent (juce::MidiMessage::noteOn (it->outCh, it->pitch,
                                                        static_cast<juce::uint8> (it->vel)), s);
             if (doLog)
+                // 2026-09-06: input channel/note included alongside the
+                // pitch - added while chasing a persistent re-strike chain
+                // that survived several OrchPiano-side fixes with no figure
+                // active nearby; that turned out to have an entirely upstream
+                // cause (an idle OrchMerge Sender transmitting a phantom
+                // note-on with no clip on its track - see
+                // project_orchmerge_concept memory), but knowing the exact
+                // source identity is what let the user spot it, so it stays.
                 logEvent (it->nextPpq, "re-strike " + juce::MidiMessage::getMidiNoteName (it->pitch, true, true, 3)
-                          + " (still ringing past " + juce::String (maxRingBeats) + " beats)");
+                          + " (still ringing past " + juce::String (maxRingBeats) + " beats)"
+                          + "  [in ch" + juce::String (it->inCh) + " note" + juce::String (it->inNote) + "]");
             it->nextPpq = snapUpToBar (it->nextPpq + step);
         }
 
