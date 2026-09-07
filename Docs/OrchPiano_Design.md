@@ -159,7 +159,33 @@ under any real figure's own hit spacing) - the actual per-attack chord-grouping 
 real note emission elsewhere in the same function is untouched, still uses the full user value.
 Re-simulated with the fix applied: detection now succeeds at every tested `onsetWindowMs`
 including 200. Rebuilt clean (106/106 pure-logic assertions unaffected - processor-only change,
-no `ocpn::` touched), VST3 reinstalled (Bitwig confirmed closed). Not yet live-retested. | planning | (processor-side; no `ocpn`) |
+no `ocpn::` touched), VST3 reinstalled (Bitwig confirmed closed).
+
+**2026-09-07, SAME BUG STILL PRESENT after the above fix - a second, deeper cause found by
+checking the real orchestral score directly.** User's next live take (bars 85-87 again) showed
+the identical flat, un-alternating B1 repeat - the onset-window cap fix above was real and
+correct but not sufficient on its own. Root-caused properly this time by checking the actual
+`edvard-grieg-peer-gynt1-morning-mood.mid` score, not just the OrchPiano-side capture: found
+every one of the 6 real Timpani rolls in the piece, and checked what every OTHER instrument
+plays during each one - EVERY SINGLE roll has other instruments attacking during it, one has 30
+real Violin onsets inside a single 7-beat roll. The classification scan's own onset-grouping
+(`gN`/`gO` in `flushPlanBuffer`) was built from `planBuf` - the raw, ALL-INSTRUMENT merged
+stream (an OrchMerge tap combines ~13-25 independent sources onto one feed) - so any other
+instrument's note-on landing inside this scan's own onset window inserted a foreign pitch into
+`gN[i]`, instantly breaking the strict A-B-A-B alternation check well before `minGroups` could
+ever be reached. This explains why the "textbook-clean" 2026-09-06 confirmation worked at all
+(that particular roll's moment apparently had no interfering onset) while a different real
+passage, or the same passage on a different take, reliably fails - it was never actually robust,
+just lucky on the one occasion it was checked.
+
+**Fixed**: the classification scan now filters to the triggering onset's own MIDI CHANNEL only
+(`figAnchorChannel = front.msg.getChannel()`) - every other channel's note-ons are skipped
+entirely when building `gN`/`gO`, so cross-instrument interleaving can no longer corrupt a
+genuine repeating figure's own onset sequence. Relies on the same assumption Phase 5c-2d's own
+detection already leaned on and confirmed by reading OrchMerge's source directly: the Sender/Hub
+chain is a byte-for-byte, channel-preserving pass-through, so one real instrument's own repeating
+line always stays on one MIDI channel throughout. 106/106 pure-logic assertions unaffected
+(processor-only change). Rebuilt clean, VST3 reinstalled. Not yet live-retested. | planning | (processor-side; no `ocpn`) |
 | **5c-3 — ornaments + dynamics marks** | input trill / grace-group → notation marker not note-spam; carry source velocity shaping to Dorico dynamics (`dynamicContour` "Preserve+Mark"). | planning | ornament detection |
 | **5d — OrchCapture delay compensation** ✅ `16bbcb5` | **Re-scoped, see §6.1.** `delayCompensationCc` param (default 113): OrchPiano reports its constant `lookaheadBeats` delay on this CC (0..16 fits directly), sent at transport start / on value change / re-sent every 4 bars. **OrchCapture-side (its own repo):** `lookaheadCompensationCc` param (default 113, matches) — observes the CC (still passes it through untouched) and subtracts the reported beats from every captured note's onset/release, so the take lands at its real position instead of `lookaheadBeats` late. | planning | — |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |

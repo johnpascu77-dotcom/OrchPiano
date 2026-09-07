@@ -856,9 +856,33 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 // handling below for why pitch alone isn't enough.
                 std::vector<std::vector<std::pair<int, int>>> gIdent;
                 double curPpq = -1.0e18;
+                // 2026-09-07: filter to the ANCHOR's own MIDI channel only -
+                // planBuf interleaves every instrument in the whole merged
+                // orchestra (an OrchMerge tap has ~13-25 independent
+                // sources), and this scan previously built gN from the raw,
+                // all-instrument stream. Confirmed directly against the
+                // real orchestral score: EVERY genuine Timpani roll in this
+                // piece has other instruments attacking during it (one has
+                // 30 real Violin onsets inside a single 7-beat roll) - any
+                // one of those landing inside this scan's own onset window
+                // inserted a foreign, unrelated pitch into gN[i], instantly
+                // breaking the strict A-B-A-B alternation check the moment
+                // it happened, well before minGroups could ever be reached.
+                // OrchMerge's own Sender/Hub are a byte-for-byte, channel-
+                // preserving pass-through (confirmed by reading that
+                // repo's source directly, not assumed - see Phase 5c-2d's
+                // own design-doc trace), so a genuine repeating figure's
+                // own attacks all share ONE MIDI channel throughout - the
+                // anchor onset (this scan's own trigger, `front`/gp) fixes
+                // which channel to follow; every other channel's note-ons
+                // are skipped entirely for classification purposes (they
+                // still get their own ordinary reduceGroup treatment
+                // elsewhere, untouched - this only narrows what THIS scan
+                // looks at).
+                const int figAnchorChannel = front.msg.getChannel();
                 for (const auto& e : planBuf)
                 {
-                    if (! e.msg.isNoteOn())
+                    if (! e.msg.isNoteOn() || e.msg.getChannel() != figAnchorChannel)
                         continue;
                     if (e.ppq - curPpq > figGroupOnsetPpq)
                     {
