@@ -819,6 +819,34 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             // repeated-note run starting here.
             if (gp >= figureEndPpq - 1.0e-6)
             {
+                // 2026-09-07: the onset-grouping window used to bucket note-ons
+                // into gN/gO below must NOT be the user's full onsetWindowPpq -
+                // that value legitimately goes as high as 0.25 beat (200ms
+                // "Onset Window" at a typical tempo) to tolerate real jitter
+                // across ~13-25 independently-clocked orchestral Senders when
+                // grouping a genuine simultaneous CHORD. But a real repeated-
+                // note/tremolo figure's own natural spacing (a 16th note) is
+                // ALSO exactly 0.25 beat, tempo-independent (ppq, not ms) - so
+                // at the high end of that same slider, this grouping loop
+                // stops ever starting a NEW group between consecutive 16th-
+                // note hits (gap 0.25 beat, never strictly > a 0.25-beat
+                // window) and silently swallows the ENTIRE roll into ONE
+                // giant merged onset (gN.size()==1), which detectFigure()
+                // immediately rejects (< minGroups) with no figure ever
+                // detected - confirmed by simulating this exact algorithm
+                // against a real captured Timpani-roll run: detection
+                // succeeded at every onsetWindowMs from 20-178 and failed
+                // only at 200 (the slider's own max), reproducing a real
+                // "octave tremolo just stopped working" report where the
+                // build/toggle were both confirmed correct. A user widening
+                // Onset Window for an unrelated legitimate reason (sloppy
+                // chord jitter) should never silently disable figure
+                // detection - cap this specific grouping window well below
+                // any real figure's own hit spacing, independent of the
+                // user's chord-onset setting.
+                constexpr double kFigureGroupOnsetPpqCap = 0.15;
+                const double figGroupOnsetPpq = juce::jmin (onsetWindowPpq, kFigureGroupOnsetPpqCap);
+
                 std::vector<std::vector<int>> gN;
                 std::vector<double> gO;
                 // Parallel to gN (same indices, NOT sorted/deduped like gN
@@ -832,7 +860,7 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 {
                     if (! e.msg.isNoteOn())
                         continue;
-                    if (e.ppq - curPpq > onsetWindowPpq)
+                    if (e.ppq - curPpq > figGroupOnsetPpq)
                     {
                         if (gN.size() >= 20) break;
                         gN.emplace_back();

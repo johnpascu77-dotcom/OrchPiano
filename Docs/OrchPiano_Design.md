@@ -129,7 +129,37 @@ proper release, and real subsequent content (a natural diminuendo on repeated B1
 immediately after with no artifacts. Same capture reconfirmed the whole maxRingBeats chain is
 still clean (A2 pedal: one periodic re-strike chain, no cascade, no leaks) and the new per-
 identity channel diagnostic (5c-1) traced that pedal to channel 13 (Cellos) for anyone who
-revisits it. Phase 5c-2d closed out. | planning | (processor-side; no `ocpn`) |
+revisits it. Phase 5c-2d closed out.
+
+**2026-09-07, real regression report: tremolo silently stopped firing on an otherwise-ideal
+repeated-B1 roll, toggle confirmed ON.** User: heard the tremolo live during yesterday's capture,
+but a fresh take of the same kind of passage today came out as flat, un-alternating repeats -
+"the version of the plugin is correct" (the same take's E-major chord fix, from Phase 3/5a, was
+confirmed correct, ruling out a stale build). Parsed the raw capture directly: channel 3 plays
+pitch 47 (B1, the exact same pitch that was textbook-clean the day before) 23 times at a perfectly
+regular 240-tick (0.25-beat, i.e. a genuine 16th note) spacing - an ideal `RepeatedNote` shape,
+`kMinFigureGroups` (8) trivially exceeded. Traced every function on the path (`detectFigure`, the
+`gN`/`gO` onset-window buffering in `flushPlanBuffer`, `reduceGroup`'s `figureIsRoll`/
+`pendingTremolos` scheduling) - none of it depends on anything the day's two hand-split/role fixes
+touched, ruling those out as the cause. Root-caused instead by simulating the exact algorithm in
+Python against the real captured tick/pitch data: the classification scan's own onset-grouping
+loop shares the SAME `onsetWindowPpq` as the unrelated "fuse near-simultaneous orchestral
+attacks into one chord" grouping used elsewhere in the same function - legitimately as wide as
+0.25 beat at `onsetWindowMs`'s own maximum (200ms), which is EXACTLY a 16th note's own natural,
+tempo-independent spacing (ppq, not ms). At that end of the slider, the grouping loop's strict
+`>` comparison never re-triggers between consecutive real 16th-note hits, so the entire roll
+silently fuses into ONE giant onset group before `detectFigure` ever runs - `n < minGroups`
+instantly, no figure detected, no warning. Confirmed by simulation across `onsetWindowMs` 20-200:
+detection succeeds everywhere from 20 up to 178, and fails ONLY at 200 (the slider's own ceiling) -
+a user legitimately widening Onset Window for real orchestral-jitter tolerance (its actual
+purpose) can silently and totally disable RepeatedNote/Tremolo detection with zero indication why.
+**Fixed**: the figure-detection scan's own onset-grouping window is now capped independently of
+the user's chord-onset setting (`figGroupOnsetPpq = min(onsetWindowPpq, 0.15 beat)`, comfortably
+under any real figure's own hit spacing) - the actual per-attack chord-grouping loop used for
+real note emission elsewhere in the same function is untouched, still uses the full user value.
+Re-simulated with the fix applied: detection now succeeds at every tested `onsetWindowMs`
+including 200. Rebuilt clean (106/106 pure-logic assertions unaffected - processor-only change,
+no `ocpn::` touched), VST3 reinstalled (Bitwig confirmed closed). Not yet live-retested. | planning | (processor-side; no `ocpn`) |
 | **5c-3 — ornaments + dynamics marks** | input trill / grace-group → notation marker not note-spam; carry source velocity shaping to Dorico dynamics (`dynamicContour` "Preserve+Mark"). | planning | ornament detection |
 | **5d — OrchCapture delay compensation** ✅ `16bbcb5` | **Re-scoped, see §6.1.** `delayCompensationCc` param (default 113): OrchPiano reports its constant `lookaheadBeats` delay on this CC (0..16 fits directly), sent at transport start / on value change / re-sent every 4 bars. **OrchCapture-side (its own repo):** `lookaheadCompensationCc` param (default 113, matches) — observes the CC (still passes it through untouched) and subtracts the reported beats from every captured note's onset/release, so the take lands at its real position instead of `lookaheadBeats` late. | planning | — |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |
