@@ -1044,17 +1044,30 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                     // silent, same as today.
                     if (doLog && gN.size() >= 3)
                     {
-                        juce::String pitches;
-                        for (size_t gi = 0; gi < gN.size() && gi < 6; ++gi)
+                        // 2026-09-07: widened from 6 to ALL buffered groups,
+                        // and added the onset-interval sequence - the first
+                        // pass at this diagnostic showed 6 identical pitches
+                        // yet still failed, which is impossible if the WHOLE
+                        // run really were that uniform (detectFigure would
+                        // have matched). The real explanation must be hiding
+                        // in either a later group (index >= 6, previously
+                        // invisible) or an irregular onset gap (never logged
+                        // at all before now) - print everything this time.
+                        juce::String pitches, ivs;
+                        for (size_t gi = 0; gi < gN.size(); ++gi)
                         {
                             juce::String g;
                             for (int p : gN[gi]) g << (g.isEmpty() ? "" : "+")
                                                     << juce::MidiMessage::getMidiNoteName (p, true, true, 3);
-                            pitches << (pitches.isEmpty() ? "" : " / ") << g;
+                            pitches << (pitches.isEmpty() ? "" : " ") << g;
+                            if (gi > 0)
+                                ivs << (ivs.isEmpty() ? "" : ",")
+                                    << juce::String (gO[gi] - gO[gi - 1], 3);
                         }
                         logEvent (gp, "figure-probe failed  anchorCh=" + juce::String (figAnchorChannel + 1)
                                       + "  groups=" + juce::String (static_cast<int> (gN.size()))
-                                      + "  " + pitches);
+                                      + "  pitches=[" + pitches + "]"
+                                      + "  ivs=[" + ivs + "]");
                     }
                 }
             }
