@@ -213,7 +213,28 @@ getting periodic `maxRingBeats` re-strikes plus an octave revoice (B1->B2, low-i
 fix) and hand/voice-line reassignment - a real, different reduction phenomenon (a long pedal
 under moving upper voices) that the user's "conflicting action" description most likely refers
 to, not the same bug as the bars-85-87 roll. 106/106 pure-logic assertions unaffected. Rebuilt
-clean, VST3 reinstalled. | planning | (processor-side; no `ocpn`) |
+clean, VST3 reinstalled.
+
+**2026-09-07, ACTUALLY root-caused this time - the fix above was still measuring the wrong
+thing.** The widened diagnostic (printing every buffered onset's own timing, not just its pitch)
+finally showed the real signal: the logged inter-group intervals weren't a clean, regular 0.25
+beat at all - they alternated irregularly between ~0.134 and ~0.239-0.254 beat (129 and 229-244
+ticks at 960 tpb). Checked with the user directly rather than guessing at a swing/humanization
+explanation: the source Timpani clip is confirmed **32nd notes** (0.125 beat = exactly 120 ticks)
+on a perfectly even grid, no swing, no humanization - visually confirmed against the actual
+Bitwig piano roll. The real bug: the 0.15-beat cap from the FIRST fix attempt (above) resolves,
+at this session's actual `onsetWindowMs` setting, to roughly 121-126 ticks - landing almost
+exactly ON TOP of the true 120-tick spacing. A real gap landing a few ticks either side of that
+near-coincidence sometimes fails to exceed the threshold (two real hits collapse into one
+buffered group, logging as ~244 - roughly 2x120) and sometimes just clears it (~129, roughly
+1x120) - pure boundary-proximity noise from the cap being too close to the actual note rate, not
+a musical irregularity, but more than enough to break `detectFigure`'s regularity tolerance every
+single time regardless of which onset a probe started from. **Fixed for real**: shrunk
+`kFigureGroupOnsetPpqCap` from 0.15 to 0.03 beat - comfortably below even a 64th note's spacing,
+so no realistic repeated-note rate can ever land close enough to cause this kind of boundary
+noise again. 106/106 pure-logic assertions unaffected (processor-only). Rebuilt clean, VST3
+reinstalled. Not yet live-retested.
+
 **2026-09-07, real root cause found for a second, related symptom: a note re-striking forever
 with zero real content anywhere nearby.** While the figure-detection investigation above was
 still open, the user found something they initially described as possible "sabotage": playback

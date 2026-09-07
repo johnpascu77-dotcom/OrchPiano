@@ -824,27 +824,37 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 // that value legitimately goes as high as 0.25 beat (200ms
                 // "Onset Window" at a typical tempo) to tolerate real jitter
                 // across ~13-25 independently-clocked orchestral Senders when
-                // grouping a genuine simultaneous CHORD. But a real repeated-
-                // note/tremolo figure's own natural spacing (a 16th note) is
-                // ALSO exactly 0.25 beat, tempo-independent (ppq, not ms) - so
-                // at the high end of that same slider, this grouping loop
-                // stops ever starting a NEW group between consecutive 16th-
-                // note hits (gap 0.25 beat, never strictly > a 0.25-beat
-                // window) and silently swallows the ENTIRE roll into ONE
-                // giant merged onset (gN.size()==1), which detectFigure()
-                // immediately rejects (< minGroups) with no figure ever
-                // detected - confirmed by simulating this exact algorithm
-                // against a real captured Timpani-roll run: detection
-                // succeeded at every onsetWindowMs from 20-178 and failed
-                // only at 200 (the slider's own max), reproducing a real
-                // "octave tremolo just stopped working" report where the
-                // build/toggle were both confirmed correct. A user widening
-                // Onset Window for an unrelated legitimate reason (sloppy
-                // chord jitter) should never silently disable figure
-                // detection - cap this specific grouping window well below
-                // any real figure's own hit spacing, independent of the
-                // user's chord-onset setting.
-                constexpr double kFigureGroupOnsetPpqCap = 0.15;
+                // grouping a genuine simultaneous CHORD, but a real repeated-
+                // note/tremolo figure's own natural spacing can be exactly
+                // that same order of magnitude, tempo-independent (ppq, not
+                // ms) - at the high end of that slider this grouping loop can
+                // stop starting new groups between consecutive hits entirely
+                // and silently swallow the ENTIRE roll into one giant merged
+                // onset, which detectFigure() immediately rejects with no
+                // figure ever detected.
+                //
+                // FIRST attempt at a fix here used a fixed 0.15-beat cap,
+                // reasoned to sit safely under a 16th note's 0.25-beat
+                // spacing - live-tested and STILL broken. Root-caused by
+                // widening the (now-permanent) figure-probe-failed
+                // diagnostic to print every buffered onset's timing, not
+                // just its pitch: the real Timpani part here plays 32nd
+                // notes (0.125 beat = 120 ticks at 960 tpb, confirmed
+                // directly against the source clip - a perfectly even grid,
+                // no swing/humanization), and the ACTUAL onsetWindowMs in
+                // use that session resolved to ~121-126 ticks - almost
+                // exactly ON TOP of the true 120-tick spacing. Real gaps
+                // landing a few ticks either side of that near-coincidence
+                // sometimes merged (two hits collapsing into one group,
+                // logged interval ~244 - roughly 2x120) and sometimes didn't
+                // (~129, roughly 1x120) - pure boundary-proximity noise, not
+                // a musical irregularity, but enough to break detectFigure's
+                // regularity check every single time regardless of which
+                // onset a probe started from. A 0.15-beat cap was never
+                // going to be safe against a genuine 32nd-note (or faster)
+                // figure - it needs to sit well BELOW the fastest realistic
+                // repeated-note rate, not merely below a 16th note's.
+                constexpr double kFigureGroupOnsetPpqCap = 0.03;
                 const double figGroupOnsetPpq = juce::jmin (onsetWindowPpq, kFigureGroupOnsetPpqCap);
 
                 std::vector<std::vector<int>> gN;
