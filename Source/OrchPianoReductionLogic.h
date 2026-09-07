@@ -202,7 +202,7 @@ namespace ocpn
     // the touched pitches, drop the repeats), just generalised past a strict
     // 2-set alternation to "stays within a narrow band" instead.
 
-    enum class FigureType { None = 0, Tremolo, RepeatedNote, Murmur };
+    enum class FigureType { None = 0, Tremolo, RepeatedNote, Murmur, Arpeggio };
 
     struct FigureMatch
     {
@@ -210,8 +210,9 @@ namespace ocpn
         int    groups    = 0;     // onset groups the run spans
         double spanBeats = 0.0;   // total musical duration of the run
         // Murmur only: every distinct pitch touched across the run, sorted +
-        // deduped - the chord to hold. Empty for Tremolo/RepeatedNote (the
-        // caller already has groupNotes[0]/[1] for those).
+        // deduped - the chord to hold. Empty for Tremolo/RepeatedNote/Arpeggio
+        // (the caller already has groupNotes[0]/[1] for those, or - for
+        // Arpeggio - passes groupNotes straight to respaceArpeggio()).
         std::vector<int> unionPitches;
     };
 
@@ -224,16 +225,77 @@ namespace ocpn
     // If that strict alternation doesn't match and `maxMurmurSpanSemis > 0`,
     // also tries Murmur: a run of >= `minGroups` groups at the same regular-
     // interval tolerance, where every pitch touched so far stays within
-    // `maxMurmurSpanSemis` semitones of each other (a genuinely WIDE arpeggio
-    // that exceeds a hand's span is a different, not-yet-built case -
-    // arpeggioRespace - so this stays deliberately narrow, e.g. 7 = a 5th).
-    // `maxMurmurSpanSemis <= 0` skips the Murmur check entirely (existing
-    // callers/tests that don't pass it see no behaviour change).
+    // `maxMurmurSpanSemis` semitones of each other (a narrow-band accompaniment
+    // figure, held as one static chord).
+    //
+    // 2026-09-07 (Phase 5c-2b): if Murmur ALSO fails to reach `minGroups`
+    // (i.e. the figure's raw pitch span keeps exceeding `maxMurmurSpanSemis`),
+    // tries the complementary case - Arpeggio: a run of >= `minGroups` groups
+    // at the same interval-regularity tolerance whose running union of PITCH
+    // CLASSES (not raw pitches) stays within a small fixed set (a triad/7th-
+    // chord's worth, <= 4), but whose final raw pitch span genuinely EXCEEDS
+    // `maxMurmurSpanSemis` - a real orchestral texture spread across several
+    // octaves that's nonetheless harmonically narrow (a broken chord too wide
+    // for one hand), rather than free chromatic wandering. Live-found on
+    // Grieg's "Morning Mood": a fast RH figure spanning ~19 semitones,
+    // outlining nothing but an F-major triad (F/A/C) in different octaves -
+    // notated literally (2-3 overlapping notes per attack, since several real
+    // orchestral parts double different octaves of the same broken chord
+    // simultaneously) it reads as cluttered "double vision" rather than a
+    // clean single arpeggiated line. `unionPitches` is left empty for
+    // Arpeggio (unlike Murmur) - the caller passes `groupNotes` straight to
+    // `respaceArpeggio()` to get the actual per-onset re-spaced sequence,
+    // since (unlike Murmur's single held chord) Arpeggio must preserve one
+    // real, distinct note per onset, just re-registered to fit a hand.
+    //
+    // `maxMurmurSpanSemis <= 0` skips BOTH the Murmur and Arpeggio checks
+    // entirely (existing callers/tests that don't pass it see no behaviour
+    // change).
     FigureMatch detectFigure (const std::vector<std::vector<int>>& groupNotes,
                               const std::vector<double>& onsets,
                               double maxIntervalBeats,
                               int minGroups,
                               int maxMurmurSpanSemis = 0);
+
+    // Phase 5c-2b: the stable whole-run "home" pitch for arpeggioRespace -
+    // the occurrence-weighted mean of every real pitch touched across the
+    // confirmed Arpeggio run (`groupNotes[0..groups)`, `groups` =
+    // `FigureMatch::groups`), rounded to the nearest MIDI note. Occurrence-
+    // weighted (every real note at every onset counted, not just the
+    // distinct pitch classes) so an onset with more simultaneous real notes
+    // pulls the center toward its own register proportionally, matching how
+    // the passage actually sounds rather than an abstract harmony-only
+    // average. An EARLIER design anchored "home" to the run's own first
+    // onset instead and folded each subsequent onset toward whichever
+    // pitch was closest to the PREVIOUS one - rejected after testing
+    // against real captured data (not just reasoning about it): when the
+    // harmony's own chord tone happened to sit an exact octave from that
+    // first onset by coincidence (confirmed on a real Grieg passage), every
+    // later occurrence of that same pitch class kept folding right back
+    // onto it, collapsing an entire moving broken-chord run into one
+    // repeated flat note - the opposite of "re-spaced," and a strictly
+    // worse result than the dense-but-genuine chords it was meant to fix.
+    // A single whole-run mean has no such degenerate attractor. Empty
+    // `groupNotes` or `groups <= 0` returns 60 (middle C) as an inert
+    // fallback - callers only ever use this once `detectFigure` has already
+    // confirmed a non-empty Arpeggio run.
+    int arpeggioHomePitch (const std::vector<std::vector<int>>& groupNotes, int groups) noexcept;
+
+    // Fold `pitch` by whole octaves to land as close as possible to `home`,
+    // without changing its pitch class. Used per REAL note (not per onset,
+    // and not reduced to one note per onset) - a genuine orchestral texture
+    // often has several real parts doubling different octaves of the same
+    // broken-chord tone simultaneously; folding each one independently
+    // toward the same home preserves that (as fewer, tighter-spaced real
+    // notes) rather than arbitrarily discarding all but one. Two originally-
+    // different-register notes that fold onto the identical pitch are the
+    // caller's own concern (e.g. OrchPianoProcessor's existing byPitch
+    // "keep the louder one" merge already handles this for free - the same
+    // logic every other onset group already goes through). Ties (equally
+    // close in either octave direction) fold toward whichever octave count
+    // is closer to zero away from `home` using round-half-away-from-zero -
+    // deterministic, not tuned for a particular direction.
+    int foldNearestOctave (int pitch, int home) noexcept;
 
     // Estimate 0..1 how hard an n-note chord spanning `spanSemis` is for one
     // hand (streaming proxy: count + span; the planning engine adds a

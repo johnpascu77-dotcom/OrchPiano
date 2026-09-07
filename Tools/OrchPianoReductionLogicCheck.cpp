@@ -414,22 +414,122 @@ int main()
         check (detectFigure (murm, mo, 0.4, 8).type == FigureType::None,
                "detectFigure: murmur detection is off unless maxMurmurSpanSemis is passed");
 
-        // A genuinely wide, non-alternating spread (here 30 semitones) must
-        // NOT be swept into Murmur just because it doesn't strictly alternate
-        // between two pitch sets - that's the separate, not-yet-built
-        // arpeggioRespace case (an arpeggio too wide for one hand), not a
-        // narrow accompaniment figure to hold as a chord.
-        std::vector<std::vector<int>> wide { {40}, {52}, {64}, {40}, {55}, {70}, {42}, {58} };
+        // A genuinely wide spread (here 30 semitones - too wide for Murmur's
+        // own 7-semitone gate) that ALSO touches too many distinct pitch
+        // classes (5: {4,7,10,6,...} - see below) to read as a broken chord
+        // either must fall through as None - free chromatic wandering, not a
+        // figure this code has any business reshaping.
+        std::vector<std::vector<int>> wide { {40}, {51}, {64}, {41}, {55}, {70}, {42}, {58} };
         std::vector<double> wo { 0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4 };
         check (detectFigure (wide, wo, 0.4, 8, 7).type == FigureType::None,
-               "detectFigure: a wide non-alternating spread is NOT swept into murmur");
+               "detectFigure: a wide spread touching too many pitch classes is NOT arpeggio either");
 
-        // Strict alternation takes priority over Murmur when both would
-        // technically match - a real tremolo shouldn't be reclassified just
-        // because maxMurmurSpanSemis happens to be passed in too.
+        // Strict alternation takes priority over Murmur/Arpeggio when both
+        // would technically match - a real tremolo shouldn't be reclassified
+        // just because maxMurmurSpanSemis happens to be passed in too.
         const auto fPriority = detectFigure (trem, tro, 0.6, 4, 7);
         check (fPriority.type == FigureType::Tremolo,
-               "detectFigure: strict alternation wins over murmur when both would match");
+               "detectFigure: strict alternation wins over murmur/arpeggio when both would match");
+
+        // 2026-09-07 (Phase 5c-2b): live-found on the SAME Grieg passage this
+        // memory's Murmur entry already traces - a different bar, this time a
+        // fast RH figure spanning 19 semitones (F4..C6) that touches nothing
+        // but an F-major triad (F/A/C) in different octaves. Too wide for
+        // Murmur's 7-semitone gate, but harmonically narrow (3 pitch classes)
+        // - the case Murmur's own header comment named as "the separate,
+        // not-yet-built arpeggioRespace case" from the day it was written.
+        // Shape below: F5,A5,C6, F5,A4,C5, F5,A5,C6, F4 (9 hits, mirrors the
+        // real capture's alternating-octave broken-chord contour).
+        std::vector<std::vector<int>> arp {
+            {77}, {81}, {84}, {77}, {69}, {72}, {77}, {81}, {84}
+        };
+        std::vector<double> ao { 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0 };
+        const auto fArp = detectFigure (arp, ao, 0.4, 8, 7);
+        check (fArp.type == FigureType::Arpeggio,
+               "detectFigure: a wide but harmonically narrow broken chord -> Arpeggio");
+        checkInt (fArp.groups, 9, "detectFigure: arpeggio spans all 9 hits");
+
+        // arpeggioHomePitch: the occurrence-weighted mean of every touched
+        // pitch (77*3 + 81*2 + 84*2 + 69 + 72 = 702, / 9 hits = 78 exactly).
+        const int home = arpeggioHomePitch (arp, fArp.groups);
+        checkInt (home, 78, "arpeggioHomePitch: occurrence-weighted mean of the whole run");
+
+        // foldNearestOctave: every touched pitch, folded independently
+        // toward that single stable home, lands within a tritone of it and
+        // keeps its own pitch class - the figure's real harmonic motion
+        // (F/A/C moving between onsets) survives, just re-registered.
+        bool allNearHome = true, allRightPitchClass = true;
+        for (int p : arp[0])   // representative - real callers fold every note of every onset
+        {
+            const int folded = foldNearestOctave (p, home);
+            if (std::abs (folded - home) > 6) allNearHome = false;
+            if (mod12 (folded) != mod12 (p)) allRightPitchClass = false;
+        }
+        std::vector<int> foldedRun;
+        for (int i = 0; i < fArp.groups; ++i)
+            for (int p : arp[static_cast<size_t> (i)])
+            {
+                const int folded = foldNearestOctave (p, home);
+                foldedRun.push_back (folded);
+                if (std::abs (folded - home) > 6) allNearHome = false;
+                if (mod12 (folded) != mod12 (p)) allRightPitchClass = false;
+            }
+        check (allNearHome, "foldNearestOctave: every note lands within a tritone of home");
+        check (allRightPitchClass, "foldNearestOctave: pitch classes (harmonic identity) are unchanged");
+        check (eq (foldedRun, { 77, 81, 72, 77, 81, 84, 77, 81, 72 }),
+               "foldNearestOctave: reproduces the exact re-spaced sequence by hand-computed example");
+
+        // 2026-09-07: an EARLIER design (fold each onset toward whichever
+        // candidate was closest to the PREVIOUS respaced note, anchored to
+        // the run's own first onset as "home") was tested against this
+        // exact shape's real-world counterpart - a genuine Grieg passage,
+        // bars 38-39, 25 real onsets - and found to degenerate: because 77
+        // (F5) sits exactly one octave from that passage's own leading
+        // pickup note (F6/89), EVERY subsequent F occurrence kept folding
+        // right back onto that single fixed pitch, collapsing the whole
+        // moving broken-chord run into one flat repeated note - confirmed by
+        // running the old algorithm against the real captured tick/pitch
+        // data, not just reasoning about it (see design doc). The
+        // occurrence-weighted whole-run mean used here has no such
+        // degenerate attractor - representative excerpt of that same real
+        // shape (F/A/C cycling across 3 octaves, home lands mid-register):
+        std::vector<std::vector<int>> arpReal {
+            { 89 }, { 77, 81, 84 }, { 72, 77, 81 }, { 69, 72, 77 }, { 72, 77, 81 },
+            { 77, 81, 84 }, { 72, 77, 81 }, { 69, 72, 77 }, { 65, 69, 72 }, { 69, 72, 77 },
+        };
+        std::vector<double> arpRealOnsets { 0.0, 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0, 2.25 };
+        const auto fArpReal = detectFigure (arpReal, arpRealOnsets, 0.4, 8, 7);
+        check (fArpReal.type == FigureType::Arpeggio,
+               "detectFigure: the real bars-38-39 shape (leading pickup + cycling triad) -> Arpeggio");
+        const int homeReal = arpeggioHomePitch (arpReal, fArpReal.groups);
+        int minFolded = 1000, maxFolded = -1000;
+        for (int i = 0; i < fArpReal.groups; ++i)
+            for (int p : arpReal[static_cast<size_t> (i)])
+            {
+                const int folded = foldNearestOctave (p, homeReal);
+                minFolded = std::min (minFolded, folded);
+                maxFolded = std::max (maxFolded, folded);
+            }
+        check (maxFolded - minFolded <= 12,
+               "arpeggioHomePitch+foldNearestOctave: the real passage's folded span fits in one octave "
+               "(was 24 semitones raw)");
+        // Confirms the degenerate-collapse failure mode is actually gone:
+        // NOT every onset folds to the exact same pitch as the first.
+        int distinctFolded = 0;
+        {
+            std::vector<int> seen;
+            for (int i = 0; i < fArpReal.groups; ++i)
+                for (int p : arpReal[static_cast<size_t> (i)])
+                {
+                    const int folded = foldNearestOctave (p, homeReal);
+                    if (std::find (seen.begin(), seen.end(), folded) == seen.end())
+                        seen.push_back (folded);
+                }
+            distinctFolded = static_cast<int> (seen.size());
+        }
+        check (distinctFolded >= 3,
+               "arpeggioHomePitch+foldNearestOctave: the run keeps real harmonic motion (>=3 distinct "
+               "folded pitches), not flattened to one repeated note");
     }
 
     // --- Phase 5a: adaptive hand split -----------------------------

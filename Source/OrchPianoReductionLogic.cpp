@@ -841,9 +841,84 @@ namespace ocpn
                 m.spanBeats    = (onsets[static_cast<size_t> (mrun - 1)] - onsets[0]) + iv0;
                 m.type         = FigureType::Murmur;
                 m.unionPitches = std::move (uni);
+                return m;
+            }
+
+            // Arpeggio: the complementary case Murmur's own span gate above
+            // deliberately excludes - see this function's header comment.
+            // Same interval-regularity requirement, but tracks the running
+            // union of PITCH CLASSES (not raw pitches), capped at a small
+            // fixed count (a triad/7th-chord's worth), with no gate at all on
+            // raw register span while scanning - only checked at the end,
+            // and required to genuinely EXCEED maxMurmurSpanSemis (otherwise
+            // this is just Murmur's own case, which already would have
+            // matched above).
+            constexpr int kMaxArpeggioPitchClasses = 4;
+            std::vector<int> classes;
+            for (int p : A)
+            {
+                const int pc = mod12 (p);
+                if (std::find (classes.begin(), classes.end(), pc) == classes.end())
+                    classes.push_back (pc);
+            }
+            int alo = A.front(), ahi = A.front();
+            for (int p : A) { alo = std::min (alo, p); ahi = std::max (ahi, p); }
+
+            int arun = 1;
+            for (int i = 1; i < n; ++i)
+            {
+                const double iv = onsets[static_cast<size_t> (i)] - onsets[static_cast<size_t> (i - 1)];
+                if (iv <= 1.0e-6 || iv > maxIntervalBeats || std::abs (iv - iv0) > 0.35 * iv0)
+                    break;
+                const auto& g = groupNotes[static_cast<size_t> (i)];
+                if (g.empty())
+                    break;
+
+                std::vector<int> trialClasses = classes;
+                for (int p : g)
+                {
+                    const int pc = mod12 (p);
+                    if (std::find (trialClasses.begin(), trialClasses.end(), pc) == trialClasses.end())
+                        trialClasses.push_back (pc);
+                }
+                if (static_cast<int> (trialClasses.size()) > kMaxArpeggioPitchClasses)
+                    break;
+
+                classes = std::move (trialClasses);
+                for (int p : g) { alo = std::min (alo, p); ahi = std::max (ahi, p); }
+                ++arun;
+            }
+
+            if (arun >= minGroups && (ahi - alo) > maxMurmurSpanSemis)
+            {
+                m.groups    = arun;
+                m.spanBeats = (onsets[static_cast<size_t> (arun - 1)] - onsets[0]) + iv0;
+                m.type      = FigureType::Arpeggio;
             }
         }
 
         return m;
+    }
+
+    int arpeggioHomePitch (const std::vector<std::vector<int>>& groupNotes, int groups) noexcept
+    {
+        if (groups <= 0 || groupNotes.empty())
+            return 60;
+
+        long long sum = 0;
+        int count = 0;
+        for (int i = 0; i < groups && i < static_cast<int> (groupNotes.size()); ++i)
+            for (int p : groupNotes[static_cast<size_t> (i)]) { sum += p; ++count; }
+
+        if (count == 0)
+            return 60;
+
+        return static_cast<int> (std::lround (static_cast<double> (sum) / count));
+    }
+
+    int foldNearestOctave (int pitch, int home) noexcept
+    {
+        const int k = static_cast<int> (std::lround ((home - pitch) / 12.0));
+        return pitch + 12 * k;
     }
 }

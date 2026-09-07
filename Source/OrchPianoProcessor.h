@@ -189,6 +189,17 @@ private:
     struct PendingHardOff { int outCh = 0, pitch = 0; double ppq = 0.0; };
     std::vector<PendingHardOff> pendingHardOffs;
 
+    // ---- Phase 5c-2b: wide-arpeggio re-spacing ----
+    // Unlike Tremolo/Murmur/RepeatedNote (which collapse a run to 1-2 held
+    // chords, consuming the rest as silent repeats), an Arpeggio run keeps
+    // every onset's own real notes AND count - only their register changes.
+    // One stable home pitch (ocpn::arpeggioHomePitch), computed once at
+    // detection time; the reduceGroup() call site folds every real note in
+    // every onset of the run toward it (ocpn::foldNearestOctave) instead of
+    // running the normal per-hand reduction pipeline unmodified on the raw,
+    // wide-spanning content.
+    int figArpeggioHome = 60;
+
     // ---- Phase 5c-2d: timpani-roll -> octave tremolo ----
     // A detected RepeatedNote figure (ocpn::detectFigure) IS the raw MIDI
     // shape of an orchestral roll (timpani, tremolo strings) - one pitch

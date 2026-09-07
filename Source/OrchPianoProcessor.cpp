@@ -926,6 +926,28 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                         figSetB         = figSetA;
                         figGroupsToEmit = 1;
                     }
+                    else if (fig.type == ocpn::FigureType::Arpeggio)
+                    {
+                        // 2026-09-07 (Phase 5c-2b): unlike Tremolo/Murmur/
+                        // RepeatedNote (which COLLAPSE the run - most onsets
+                        // are consumed as silent repeats of 1-2 held chords),
+                        // Arpeggio must PRESERVE every onset's own real note
+                        // COUNT and rhythm - only its REGISTER changes. One
+                        // stable "home" pitch computed once for the whole
+                        // run; every real note at every onset within it gets
+                        // independently octave-folded toward that home at
+                        // the reduceGroup() call site below (not collapsed
+                        // to a single representative pitch - see
+                        // arpeggioHomePitch's header comment for why an
+                        // earlier per-onset design was rejected).
+                        // figGroupsToEmit = the whole run's length means the
+                        // <=0 suppression path below is never taken for any
+                        // of its onsets.
+                        figArpeggioHome = ocpn::arpeggioHomePitch (gN, fig.groups);
+                        figSetA.clear();
+                        figSetB.clear();
+                        figGroupsToEmit = fig.groups;
+                    }
                     else
                     {
                         figSetA         = gN[0];
@@ -940,15 +962,25 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                             for (int p : s) r << (r.isEmpty() ? "" : "+") << juce::MidiMessage::getMidiNoteName (p, true, true, 3);
                             return r;
                         };
-                        const char* label = fig.type == ocpn::FigureType::Tremolo  ? "tremolo  "
-                                          : fig.type == ocpn::FigureType::Murmur   ? "murmur   "
-                                                                                    : "repeated ";
-                        logEvent (gp, juce::String (label)
-                                      + setStr (figSetA)
-                                      + (fig.type == ocpn::FigureType::Tremolo ? (" ~ " + setStr (figSetB)) : juce::String())
-                                      + "  (" + juce::String (fig.groups) + " hits, "
-                                      + juce::String (fig.spanBeats, 1) + " beats) -> held"
-                                      + (fig.type == ocpn::FigureType::Murmur ? " chord" : juce::String()));
+                        if (fig.type == ocpn::FigureType::Arpeggio)
+                        {
+                            logEvent (gp, "arpeggio respaced around "
+                                          + juce::MidiMessage::getMidiNoteName (figArpeggioHome, true, true, 3)
+                                          + "  (" + juce::String (fig.groups) + " hits, "
+                                          + juce::String (fig.spanBeats, 1) + " beats)");
+                        }
+                        else
+                        {
+                            const char* label = fig.type == ocpn::FigureType::Tremolo  ? "tremolo  "
+                                              : fig.type == ocpn::FigureType::Murmur   ? "murmur   "
+                                                                                        : "repeated ";
+                            logEvent (gp, juce::String (label)
+                                          + setStr (figSetA)
+                                          + (fig.type == ocpn::FigureType::Tremolo ? (" ~ " + setStr (figSetB)) : juce::String())
+                                          + "  (" + juce::String (fig.groups) + " hits, "
+                                          + juce::String (fig.spanBeats, 1) + " beats) -> held"
+                                          + (fig.type == ocpn::FigureType::Murmur ? " chord" : juce::String()));
+                        }
                     }
                 }
                 else
@@ -1032,7 +1064,7 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                     output.addEvent (im, emitSampleFor (planBuf[idx].ppq));
             }
 
-            if (isFigGroup && figGroupsToEmit <= 0)
+            if (isFigGroup && figGroupsToEmit <= 0 && currentFigureType != ocpn::FigureType::Arpeggio)
             {
                 planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n)); // a repeat - consumed
             }
@@ -1042,7 +1074,14 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 bool figureIsRoll = false;
                 if (isFigGroup)
                 {
-                    releasePpq = figureEndPpq;
+                    // 2026-09-07: Arpeggio never holds to the run's end - see
+                    // the group-override just below and the note-off
+                    // handling's figOff comment. releasePpq stays 0.0
+                    // (isFigure false inside reduceGroup) so this onset's
+                    // note gets completely ordinary release treatment, same
+                    // as if it weren't part of a figure at all.
+                    if (currentFigureType != ocpn::FigureType::Arpeggio)
+                        releasePpq = figureEndPpq;
                     // 2026-09-06: gated to a SINGLE repeated pitch only (the
                     // real timpani-roll case) - user's explicit call after a
                     // live-found near-miss: a repeated MULTI-note chord
@@ -1060,6 +1099,23 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                         && repeatedNoteTremoloParam != nullptr && repeatedNoteTremoloParam->load() >= 0.5f;
                     --figGroupsToEmit;
                 }
+
+                // 2026-09-07 (Phase 5c-2b): re-register this onset's own
+                // real notes toward the run's stable home register - EVERY
+                // real note folded independently (not reduced to one), so a
+                // genuine multi-part orchestral doubling survives as
+                // multiple (now closely-spaced) real notes. Two notes that
+                // happen to fold onto the identical pitch are merged for
+                // free by reduceGroup's own existing byPitch "keep the
+                // louder one" dedup - the same path any other onset with a
+                // coincidental unison already goes through, nothing new
+                // needed here.
+                if (isFigGroup && currentFigureType == ocpn::FigureType::Arpeggio)
+                {
+                    for (auto& h : group)
+                        h.note = ocpn::clampNote (ocpn::foldNearestOctave (h.note, figArpeggioHome));
+                }
+
                 reduceGroup (group, planPhraseSplit, emitSampleFor (gp), gp, output, releasePpq, figureIsRoll);
                 planBuf.erase (planBuf.begin(), planBuf.begin() + static_cast<long> (n));
             }
@@ -1075,7 +1131,15 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
             // rare in practice, but the fix is the same for all three).
             const int offNote = front.msg.getNoteNumber();
             const int offCh   = front.msg.getChannel();
-            const bool figOff = front.ppq < figureEndPpq - 1.0e-6
+            // 2026-09-07: Arpeggio is excluded here - unlike the other three
+            // figure types, it never holds a note to the run's end (each
+            // onset is its own real, independently-releasing note - see the
+            // reduceGroup() call site's releasePpq comment), so its
+            // consumed identities' own real note-offs must reach
+            // handleNoteOff() normally, not be swallowed as "the figure
+            // holds this note".
+            const bool figOff = currentFigureType != ocpn::FigureType::Arpeggio
+                && front.ppq < figureEndPpq - 1.0e-6
                 && std::find (figConsumedIdentities.begin(), figConsumedIdentities.end(),
                               std::make_pair (offCh, offNote)) != figConsumedIdentities.end();
             if (figOff)
