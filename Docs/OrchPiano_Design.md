@@ -214,6 +214,38 @@ fix) and hand/voice-line reassignment - a real, different reduction phenomenon (
 under moving upper voices) that the user's "conflicting action" description most likely refers
 to, not the same bug as the bars-85-87 roll. 106/106 pure-logic assertions unaffected. Rebuilt
 clean, VST3 reinstalled. | planning | (processor-side; no `ocpn`) |
+**2026-09-07, real root cause found for a second, related symptom: a note re-striking forever
+with zero real content anywhere nearby.** While the figure-detection investigation above was
+still open, the user found something they initially described as possible "sabotage": playback
+continued past the Timpani roll to a point with NO MIDI clips anywhere in the arrangement, yet a
+B1 note kept firing every 2 bars regardless. Confirmed genuinely captured (not imagined): 5
+perfectly contiguous 2-bar-long note-on/off pairs, identical velocity 44 each time. The decision
+log's own per-identity tag immediately explained the MECHANISM (not yet the root cause):
+`re-strike B1 (still ringing past 4 beats) [in ch9 note47]` at bars 89, 91, 93, 95, 97 - exactly
+`maxRingBeats`' own pre-existing, already-correct re-strike feature, firing because OrchPiano's
+own `activeNotes` bookkeeping believed the Timpani's B1 (from the bars 85-87 roll, replayed
+across nearly every take this session) was STILL sounding, long after the real roll ended.
+
+Traced the actual leak: `dampAllRinging()` sends the real note-offs for whatever is currently
+"ringing" per `activeNotes`, but only marks each entry `outputNote = -2` - it does NOT remove the
+entry from `activeNotes`. The transport-STOP branch in `processBlock` correctly pairs its own
+`dampAllRinging()` call with an explicit `activeNotes.clear()` immediately after, but the
+separate "transport jumped backwards while playing" branch (loop/relocate) called
+`dampAllRinging()` alone, with no follow-up clear. A stale, already-damped entry left behind by
+that branch then sits in `activeNotes` indefinitely - and `handleNoteOff()` matches purely by
+(channel, inputNote) identity, erasing whatever entry it finds FIRST regardless of its
+`outputNote` value. The very next real note-off for that same identity (a genuinely fresh
+attack, on some LATER take of the same passage) matches the stale entry first, harmlessly
+"consuming" it (nothing is sent, since its `outputNote` was already -2) - while leaving one of
+the CURRENT take's own genuinely-still-open entries for that identity orphaned instead, to be
+re-struck by `maxRingBeats` forever. This exactly fits the session's own repeated backward-
+seeking test workflow (bar 82 -> 53 -> 83 -> 94 -> 83, all in one session) hitting that code path
+many times over. **Fixed**: added the same `activeNotes.clear()` to the "jumped backwards"
+branch that the STOP branch already has. Confirmed the exact failure signature (velocity-44,
+tick-17280-onward B1) was present in a capture taken just before this fix and should be gone in
+the next one taken after it. 106/106 pure-logic assertions unaffected (processor-only). Rebuilt
+clean, VST3 reinstalled. Not yet live-retested.
+
 | **5c-3 — ornaments + dynamics marks** | input trill / grace-group → notation marker not note-spam; carry source velocity shaping to Dorico dynamics (`dynamicContour` "Preserve+Mark"). | planning | ornament detection |
 | **5d — OrchCapture delay compensation** ✅ `16bbcb5` | **Re-scoped, see §6.1.** `delayCompensationCc` param (default 113): OrchPiano reports its constant `lookaheadBeats` delay on this CC (0..16 fits directly), sent at transport start / on value change / re-sent every 4 bars. **OrchCapture-side (its own repo):** `lookaheadCompensationCc` param (default 113, matches) — observes the CC (still passes it through untouched) and subtracts the reported beats from every captured note's onset/release, so the take lands at its real position instead of `lookaheadBeats` late. | planning | — |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |

@@ -1490,6 +1490,28 @@ void OrchPianoAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, ju
         planPhraseSplit = -1;
         planLastOnsetPpq = -1.0e18;
         dampAllRinging (output, 0);
+        // 2026-09-07: dampAllRinging() only sends the real note-offs and
+        // marks each entry outputNote=-2 - it does NOT remove them from
+        // activeNotes (unlike the transport-STOP branch above, which pairs
+        // the identical dampAllRinging call with an explicit
+        // activeNotes.clear() right after). Left as-is here, a stale,
+        // already-damped entry survives indefinitely and silently "steals"
+        // the FIRST future note-off for the same (channel, inputNote)
+        // identity - handleNoteOff() matches by that identity alone and
+        // erases whatever it finds first, regardless of outputNote's value,
+        // so the stale entry gets harmlessly consumed (outputNote<0 means
+        // nothing extra is sent) while one of the CURRENT take's genuinely
+        // still-open entries for that same identity is left orphaned
+        // instead - then re-struck by maxRingBeats forever. Live-found via
+        // a real symptom that fit this exactly: a B1 (Timpani) note kept
+        // re-striking every 2 bars long after the actual Timpani roll had
+        // finished, with zero clips anywhere near the playhead - traced to
+        // this project's own repeated backward-seeking test workflow
+        // (bar 82 -> 53 -> 83 -> 94 -> 83, all today) hitting this exact
+        // branch multiple times. Clearing here, matching the STOP branch's
+        // own pattern, removes the stale entries instead of leaving them to
+        // corrupt a later take's own bookkeeping.
+        activeNotes.clear();
         prevGroupNotes.clear();
         prevGroupHands.clear();
         prevKeptNotes.clear();
