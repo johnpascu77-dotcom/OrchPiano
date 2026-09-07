@@ -217,6 +217,22 @@ private:
         int inCh = 0, inNote = 0;         // to find + clear its activeNotes entry at the end
         double nextPpq = 0.0, endPpq = 0.0, stepBeats = 0.25;
         bool highPhaseNow = false;        // which pitch is currently sounding
+        // 2026-09-07: this emission's unique id - same reasoning as
+        // TrackedNote::seq / PendingRestrike's own comment. A roll's own
+        // recognized figure only ever spans a bounded run (<=20 groups per
+        // scan, or fewer if the alternation tapers below minGroups before
+        // that); the REAL underlying repeated note keeps going past the
+        // figure's own endPpq, processed ordinarily. Those later ordinary
+        // attacks share the IDENTICAL (channel, inputNote) as this tremolo's
+        // own tracked note - live-found bug: drainTremolos's end-of-run
+        // cleanup matched activeNotes by that identity alone and could erase
+        // a LATER, unrelated ordinary attack's own fresh entry instead of
+        // this tremolo's own (now-stale) one, leaving that ordinary note's
+        // real eventual note-off with nothing left to match - a genuinely
+        // stuck note, re-struck by maxRingBeats far later with no clip
+        // anywhere near it. -1 defensively (never matches a real entry) if
+        // ever left unset.
+        juce::int64 seq = -1;
     };
     std::vector<PendingTremolo> pendingTremolos;
     void drainTremolos (juce::MidiBuffer& output, double blockStartPpq, double lookaheadPpq,

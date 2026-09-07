@@ -233,7 +233,37 @@ single time regardless of which onset a probe started from. **Fixed for real**: 
 `kFigureGroupOnsetPpqCap` from 0.15 to 0.03 beat - comfortably below even a 64th note's spacing,
 so no realistic repeated-note rate can ever land close enough to cause this kind of boundary
 noise again. 106/106 pure-logic assertions unaffected (processor-only). Rebuilt clean, VST3
-reinstalled. Not yet live-retested.
+reinstalled.
+
+**LIVE-CONFIRMED 2026-09-07**: both bars 85-87 AND the several shorter rolls at bars 56-62
+(previously misdiagnosed below as a different, unrelated sustained-pedal phenomenon - it wasn't,
+it was the same bug) now show clean `repeated B1 (N hits...) -> tremolo scheduled -> alternate
+-> ended` cycles in the decision log, repeatedly, correctly. The multi-day figure-detection
+investigation is closed.
+
+**2026-09-07, one more real bug found via the SAME test - a stuck note at a roll's own tail.**
+Re-testing surfaced a new, smaller, genuinely different issue: the phantom re-strike-with-no-
+clip-nearby symptom (previously fixed once for the transport-backward-seek case, `7adb980`)
+reappeared on a clean, continuous forward play with no backward seek at all. Root-caused from a
+short targeted capture: a real Timpani roll's own recognized figure only ever spans a bounded
+run (the scan caps at 20 groups, or fewer if the true alternation tapers below `minGroups`
+first) - the REAL underlying repeated note continues past the figure's own `endPpq`, and those
+extra tail hits get processed as ordinary individual attacks, sharing the IDENTICAL (channel,
+inputNote) identity as the tremolo's own tracked note. `drainTremolos`'s end-of-run cleanup
+matched `activeNotes` by that identity alone (`a->channel == it->inCh && a->inputNote ==
+it->inNote`) - if a later ordinary tail attack's own fresh `activeNotes` entry existed by the
+time this fired, the cleanup's first-match-wins erase could take THAT entry instead of the
+tremolo's own now-stale one, leaving the ordinary attack's real eventual note-off with nothing
+left to match - a genuinely stuck note, later re-struck by `maxRingBeats` with no clip anywhere
+near it. Confirmed directly in a real capture: raw MIDI showed a zero-length "ghost" note-on/off
+pair and an orphaned extra note-off right at the tremolo-to-ordinary handoff tick. This is the
+exact same class of ambiguity `PendingRestrike`/`TrackedNote::seq` were already built to solve
+(2026-09-06) - `PendingTremolo` was simply never given the same treatment when it was built the
+same day. **Fixed**: `PendingTremolo` gained its own `seq` (captured from the same `emitSeq` used
+for `TrackedNote` at scheduling time); `drainTremolos`'s cleanup now matches `activeNotes` by
+`seq`, not identity - the exact same emission, regardless of how many other same-identity
+attacks came after it. 106/106 pure-logic assertions unaffected (processor-only). Rebuilt clean,
+VST3 reinstalled. Not yet live-retested.
 
 **2026-09-07, real root cause found for a second, related symptom: a note re-striking forever
 with zero real content anywhere nearby.** While the figure-detection investigation above was

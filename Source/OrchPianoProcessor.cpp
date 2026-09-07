@@ -666,7 +666,7 @@ void OrchPianoAudioProcessor::reduceGroup (const std::vector<HeldOn>& group,
                     pendingTremolos.push_back ({ outCh, pitch, pitch + 12, vel,
                                                  src.channel, inPitch,
                                                  groupPpq + kTremoloStepBeats, figureReleasePpq,
-                                                 kTremoloStepBeats, false });
+                                                 kTremoloStepBeats, false, emitSeq });
                     scheduledAsTremolo = true;
                     if (doLog)
                         logEvent (groupPpq, "tremolo  scheduled " + nn (pitch) + " ~ " + nn (pitch + 12)
@@ -1380,9 +1380,15 @@ void OrchPianoAudioProcessor::drainTremolos (juce::MidiBuffer& output, double bl
                 // happens to be sounding right now - the two can differ
                 // depending on which phase this ended on).
                 output.addEvent (juce::MidiMessage::noteOff (it->outCh, soundingPitch), s);
+                // 2026-09-07: matched by seq (this exact emission), not just
+                // (channel, inputNote) - see PendingTremolo::seq's comment.
+                // A later, unrelated ordinary attack of the same real
+                // repeated note can already have its own fresh activeNotes
+                // entry by the time this fires; identity alone can't tell
+                // them apart, only seq can.
                 for (auto a = activeNotes.begin(); a != activeNotes.end(); ++a)
                 {
-                    if (a->channel == it->inCh && a->inputNote == it->inNote)
+                    if (a->seq == it->seq)
                     {
                         activeNotes.erase (a);
                         break;
