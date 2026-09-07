@@ -898,8 +898,28 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 // wide it starts swallowing a texture that actually needs
                 // re-spacing rather than a static held chord.
                 constexpr int kMaxMurmurSpanSemis = 7;
-                const auto fig = ocpn::detectFigure (gN, gO, kMaxFigIntervalBeats, kMinFigureGroups,
-                                                     kMaxMurmurSpanSemis);
+                auto fig = ocpn::detectFigure (gN, gO, kMaxFigIntervalBeats, kMinFigureGroups,
+                                               kMaxMurmurSpanSemis);
+                // 2026-09-07: arpeggioRespace REVERTED live-test - user's own
+                // words: "not good at all... all the arpeggios were reduced
+                // to repeated notes." The whole premise it was built on was
+                // wrong: the user's original "double vision" complaint was
+                // about the MusicXML/Dorico ENGRAVING of these dense chords
+                // (a Finisher/music21 notation choice), NOT about OrchPiano's
+                // actual note content, which the user confirmed was already
+                // correct beforehand ("the notes themselves in the previous
+                // takes were ok"). Folding every real note toward one home
+                // pitch is fundamentally lossy about the passage's own
+                // contour - fine on the small hand-picked synthetic/real
+                // excerpts this was verified against, but on a real, longer
+                // take it can and did flatten genuine moving broken-chord
+                // motion into audibly repeated notes. ocpn::detectFigure /
+                // arpeggioHomePitch / foldNearestOctave are left in place
+                // (tested, inert) for a future NOTATION-ONLY redesign in
+                // OrchPianoFinisher instead - this call site simply never
+                // acts on an Arpeggio classification.
+                if (fig.type == ocpn::FigureType::Arpeggio)
+                    fig.type = ocpn::FigureType::None;
                 currentFigureType = fig.type;
                 if (fig.type != ocpn::FigureType::None)
                 {
