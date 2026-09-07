@@ -1030,6 +1030,32 @@ void OrchPianoAudioProcessor::flushPlanBuffer (juce::MidiBuffer& output, double 
                 else
                 {
                     figureEndPpq = -1.0e18;
+                    // 2026-09-07: temporary-but-cheap diagnostic (kept
+                    // permanently, matching Phase 5c-1's own precedent) -
+                    // a failed probe that still saw a real multi-hit run on
+                    // its anchor channel is worth a log line: live reports
+                    // of "the roll still isn't detected" after the channel-
+                    // filter fix couldn't be root-caused further from the
+                    // capture alone (the classification-time channel
+                    // identity isn't otherwise visible anywhere in the
+                    // output). Only fires when there's something worth
+                    // seeing (>=3 same-channel groups probed) - an ordinary
+                    // single-note onset (the overwhelming majority) stays
+                    // silent, same as today.
+                    if (doLog && gN.size() >= 3)
+                    {
+                        juce::String pitches;
+                        for (size_t gi = 0; gi < gN.size() && gi < 6; ++gi)
+                        {
+                            juce::String g;
+                            for (int p : gN[gi]) g << (g.isEmpty() ? "" : "+")
+                                                    << juce::MidiMessage::getMidiNoteName (p, true, true, 3);
+                            pitches << (pitches.isEmpty() ? "" : " / ") << g;
+                        }
+                        logEvent (gp, "figure-probe failed  anchorCh=" + juce::String (figAnchorChannel + 1)
+                                      + "  groups=" + juce::String (static_cast<int> (gN.size()))
+                                      + "  " + pitches);
+                    }
                 }
             }
 

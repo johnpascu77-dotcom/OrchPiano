@@ -185,7 +185,35 @@ genuine repeating figure's own onset sequence. Relies on the same assumption Pha
 detection already leaned on and confirmed by reading OrchMerge's source directly: the Sender/Hub
 chain is a byte-for-byte, channel-preserving pass-through, so one real instrument's own repeating
 line always stays on one MIDI channel throughout. 106/106 pure-logic assertions unaffected
-(processor-only change). Rebuilt clean, VST3 reinstalled. Not yet live-retested. | planning | (processor-side; no `ocpn`) |
+(processor-only change). Rebuilt clean, VST3 reinstalled.
+
+**2026-09-07, STILL not fixed on live re-test - added a diagnostic instead of guessing a third
+time.** User's next take (starting bar 53) re-confirmed the SAME bar 85-87 roll is still flat,
+un-alternating repeats even with the channel filter live. Checked the real score in more detail
+for this exact roll (beats 252-258): every other instrument in the whole orchestra attacks
+EXACTLY ONCE, at the roll's very first instant (beat 252.0), then holds - the Timpani plays
+completely alone for the remaining ~48 hits. Reasoned through the code with this shape in mind:
+the classification probe only ever runs ONCE per OUTER onset group, using whichever note happens
+to be `planBuf.front()` at that instant as the channel anchor - and since ~10 other instruments
+share that exact downbeat tick, the anchor could easily be one of THEM (not the Timpani), and
+since the WHOLE bundled onset (every instrument's note at that tick) gets consumed together in
+one pass, the Timpani's own first hit(s) can get silently swept up in a failed probe anchored to
+an unrelated channel. The following onset (Timpani alone, no other instrument attacking) SHOULD
+still retry correctly - by reasoning this should have recovered the tremolo for at least most of
+the run, which contradicts the fully-flat real result. Root cause not yet confirmed with real
+evidence (this session's decision log for this capture shows a `drop B1 (47) over span` at the
+downbeat and nothing else - consistent with several competing explanations, not conclusive on
+its own). **Added a permanent diagnostic instead of a fourth guess**: any failed classification
+probe that still saw >= 3 same-channel groups now logs `figure-probe failed anchorCh=N groups=M
+<pitches>` - the next real capture with Decision Log on will show directly which channel got
+anchored and what it actually saw, closing this without further speculation. Same bar 56-62
+region separately clarified as NOT the fast roll at all: the decision log's own per-identity
+tag (`[in ch9 note47]`, Phase 5c-1's diagnostic) shows this is a single SUSTAINED B1 pedal tone
+getting periodic `maxRingBeats` re-strikes plus an octave revoice (B1->B2, low-interval-limit
+fix) and hand/voice-line reassignment - a real, different reduction phenomenon (a long pedal
+under moving upper voices) that the user's "conflicting action" description most likely refers
+to, not the same bug as the bars-85-87 roll. 106/106 pure-logic assertions unaffected. Rebuilt
+clean, VST3 reinstalled. | planning | (processor-side; no `ocpn`) |
 | **5c-3 — ornaments + dynamics marks** | input trill / grace-group → notation marker not note-spam; carry source velocity shaping to Dorico dynamics (`dynamicContour` "Preserve+Mark"). | planning | ornament detection |
 | **5d — OrchCapture delay compensation** ✅ `16bbcb5` | **Re-scoped, see §6.1.** `delayCompensationCc` param (default 113): OrchPiano reports its constant `lookaheadBeats` delay on this CC (0..16 fits directly), sent at transport start / on value change / re-sent every 4 bars. **OrchCapture-side (its own repo):** `lookaheadCompensationCc` param (default 113, matches) — observes the CC (still passes it through untouched) and subtracts the reported beats from every captured note's onset/release, so the take lands at its real position instead of `lookaheadBeats` late. | planning | — |
 | **6 — polish** | `OrchPiano_UsageNotes.md`; editor tabs (Mode / Voicing / Reduction / Pedal); melody/bass override UI; validation corpus run against the Beethoven-symphony reduction MIDIs. | both | — |
