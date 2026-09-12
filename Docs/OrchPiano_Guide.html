@@ -1,0 +1,217 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OrchPiano — Reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@600;700;800&family=Work+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --bg:#15120F; --surface:#1E1A15; --surface-2:#262019; --surface-3:#2E2620;
+    --border:#3A2F22; --border-soft:#2A2319;
+    --text:#EDE6D9; --text-dim:#A79B87; --text-faint:#6E6353;
+    --brass:#D8A94E; --brass-dim:#A67E38;
+    --note:#CB6E47; --note-dim:#8C4C31;
+    --control:#5C93B8; --control-dim:#3E6A85;
+    --sage:#84A672; --sage-dim:#5C7A4E;
+    --violet:#9488B0; --violet-dim:#665C7C;
+    color-scheme: dark;
+  }
+  *{ box-sizing:border-box; }
+  body{
+    background:var(--bg); color:var(--text); margin:0;
+    font-family:"Work Sans", ui-sans-serif, system-ui, sans-serif;
+    line-height:1.55; font-size:15px;
+    background-image: radial-gradient(1100px 480px at 10% -10%, color-mix(in srgb, var(--sage) 9%, transparent), transparent 60%);
+  }
+  .wrap{ max-width:1120px; margin:0 auto; padding:36px 26px 70px; }
+  .mono{ font-family:"IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+  .crumbs{ font-family:"IBM Plex Mono"; font-size:.7rem; color:var(--text-faint); letter-spacing:.04em; margin-bottom:16px; }
+  .crumbs b{ color:var(--sage); font-weight:500; }
+  .nameplate{ display:flex; align-items:flex-end; justify-content:space-between; gap:20px; flex-wrap:wrap;
+    padding-bottom:18px; margin-bottom:22px; border-bottom:2px solid var(--border); }
+  .nameplate h1{ font-family:"Big Shoulders Display"; font-weight:800; text-transform:uppercase;
+    font-size:clamp(2.1rem,5vw,3.2rem); line-height:.9; margin:0; letter-spacing:.005em; }
+  .nameplate .role{ color:var(--text-dim); font-size:.92rem; max-width:52ch; margin-top:8px; }
+  .badges{ display:flex; gap:8px; flex-wrap:wrap; }
+  .badge{ font-family:"IBM Plex Mono"; font-size:.66rem; text-transform:uppercase; letter-spacing:.06em;
+    padding:3px 9px; border-radius:20px; white-space:nowrap; }
+  .badge.chain{ color:var(--sage); border:1px solid var(--sage-dim); background:color-mix(in srgb, var(--sage) 14%, transparent); }
+  .badge.building{ color:var(--violet); border:1px solid var(--violet-dim); background:color-mix(in srgb, var(--violet) 14%, transparent); }
+  .badge.plugin-code{ color:var(--text-faint); border:1px dashed var(--text-faint); }
+  .lede{ color:var(--text-dim); max-width:74ch; margin:0 0 34px; font-size:.98rem; }
+  .lede strong{ color:var(--text); font-weight:600; }
+  .warn{ display:flex; gap:12px; background:color-mix(in srgb, var(--violet) 10%, var(--surface)); border:1px solid var(--violet-dim);
+    border-radius:8px; padding:14px 16px; margin:0 0 34px; }
+  .warn .dot{ flex:none; width:9px; height:9px; border-radius:50%; background:var(--violet); margin-top:6px; }
+  .warn p{ margin:0; color:var(--text-dim); font-size:.87rem; }
+  .warn strong{ color:var(--violet); }
+  .section-head{ display:flex; align-items:baseline; gap:14px; margin:52px 0 18px; }
+  .section-head .num{ font-family:"IBM Plex Mono"; color:var(--text-faint); font-size:.82rem; }
+  .section-head h2{ font-family:"Big Shoulders Display"; font-weight:700; text-transform:uppercase; font-size:1.5rem; margin:0; }
+  .section-head .rule{ flex:1; height:1px; background:var(--border); }
+  .section-note{ color:var(--text-dim); max-width:76ch; margin:-6px 0 22px; font-size:.9rem; }
+  .layout{ display:grid; grid-template-columns: 380px 1fr; gap:28px; align-items:start; }
+  @media (max-width:800px){ .layout{ grid-template-columns:1fr; } }
+  .shot-frame{ position:relative; border:1px solid var(--border-soft); border-radius:8px; overflow:hidden;
+    background:#0C0A08; box-shadow: 0 14px 34px -16px rgba(0,0,0,.7); }
+  .shot-frame img{ display:block; width:100%; height:auto; }
+  .marker{ position:absolute; transform:translate(-50%,-50%); width:24px; height:24px; border-radius:50%;
+    background:var(--sage); color:#0E1409; border:2px solid #0E1409; font-family:"IBM Plex Mono"; font-weight:600;
+    font-size:.74rem; display:flex; align-items:center; justify-content:center;
+    box-shadow:0 0 0 3px color-mix(in srgb, var(--sage) 45%, transparent), 0 3px 10px rgba(0,0,0,.5); }
+  .shot-caption{ color:var(--text-faint); font-size:.76rem; margin-top:10px; }
+  .region-list{ display:flex; flex-direction:column; }
+  .region{ display:flex; gap:12px; padding:14px 0; border-bottom:1px solid var(--border-soft); }
+  .region:last-child{ border-bottom:none; }
+  .region .badge-num{ flex:none; width:24px; height:24px; border-radius:50%; background:var(--surface-2);
+    border:1px solid var(--sage-dim); color:var(--sage); font-family:"IBM Plex Mono"; font-weight:600;
+    font-size:.74rem; display:flex; align-items:center; justify-content:center; margin-top:2px; }
+  .region .r-name{ font-weight:600; font-size:.9rem; }
+  .region .r-members{ font-family:"IBM Plex Mono"; font-size:.68rem; color:var(--text-faint); margin-top:3px; }
+  .region .r-desc{ color:var(--text-dim); font-size:.82rem; margin-top:5px; line-height:1.5; }
+  .table-wrap{ overflow-x:auto; background:var(--surface); border:1px solid var(--border-soft); border-radius:8px; }
+  table{ width:100%; border-collapse:collapse; font-size:.8rem; }
+  th{ text-align:left; font-family:"IBM Plex Mono"; font-weight:500; font-size:.63rem; text-transform:uppercase;
+    letter-spacing:.08em; color:var(--text-faint); padding:9px 12px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  td{ padding:8px 12px; border-bottom:1px solid var(--border-soft); vertical-align:top; }
+  tr:last-child td{ border-bottom:none; }
+  td.pid{ font-family:"IBM Plex Mono"; color:var(--brass); white-space:nowrap; }
+  td.range{ font-family:"IBM Plex Mono"; color:var(--text-faint); white-space:nowrap; font-size:.74rem; }
+  td.desc{ color:var(--text-dim); }
+  td.grp{ font-family:"IBM Plex Mono"; color:var(--sage); white-space:nowrap; font-size:.7rem; }
+  .readout-note{ display:flex; gap:14px; background:var(--surface); border:1px solid var(--border-soft); border-radius:8px;
+    padding:16px 18px; margin-top:8px; align-items:flex-start; }
+  .readout-note .dot{ flex:none; width:9px; height:9px; border-radius:50%; background:var(--sage); margin-top:6px; }
+  .readout-note p{ margin:0; color:var(--text-dim); font-size:.87rem; }
+  .readout-note code{ font-family:"IBM Plex Mono"; color:var(--sage); font-size:.82rem; }
+  footer{ margin-top:60px; padding-top:20px; border-top:1px solid var(--border); color:var(--text-faint); font-size:.76rem;
+    display:flex; justify-content:space-between; flex-wrap:wrap; gap:10px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="crumbs">Reduction &amp; Notation → <b>OrchPiano</b></div>
+
+  <div class="nameplate">
+    <div>
+      <h1>OrchPiano</h1>
+      <div class="role">Turns a dense or merged feed into a real two-hand piano part — or repairs/transforms one that's already close.</div>
+    </div>
+    <div class="badges">
+      <span class="badge chain">note path · piano reduction</span>
+      <span class="badge building">building</span>
+      <span class="badge plugin-code mono">Ocpn</span>
+    </div>
+  </div>
+
+  <p class="lede">
+    Three modes in one plugin: <strong>Repair</strong> (tidy an already-2-hand part), <strong>Reduce</strong> (the
+    real job — many voices to two hands, streaming with a short lookahead), <strong>Transform</strong>. 27 real
+    parameters, one flat column, declaration order == Bitwig's remote-control page order.
+  </p>
+
+  <div class="warn">
+    <div class="dot"></div>
+    <p><strong>Actively evolving, not finished.</strong> This plugin has the longest live-debugging history in
+    the ecosystem — figure detection (tremolo/repeated-note/murmur), hand-split, and voice-role tagging have each
+    been rewritten at least once against real orchestral captures. The build subtitle in the screenshot below
+    names its own most recent fix, which is itself a good habit to check before trusting any specific behavior.</p>
+  </div>
+
+  <div class="section-head"><span class="num">01</span><h2>The Editor</h2><div class="rule"></div></div>
+  <p class="section-note">
+    Grouped into 8 regions, top to bottom: what this instance does (1), how many voices reach the page (2), timing
+    (3), reduction quality (4), articulation toggles (5), output routing (6), the importance weights that decide
+    which notes survive (7), and keyswitch/figure handling (8).
+  </p>
+
+  <div class="layout">
+    <div class="shot-frame">
+      <img src="assets/orchpiano-editor.png" alt="OrchPiano editor, real screenshot, 8 numbered regions covering all 27 parameters">
+      <div class="marker" style="left:50%; top:13.1%">1</div>
+      <div class="marker" style="left:50%; top:25.2%">2</div>
+      <div class="marker" style="left:50%; top:37.2%">3</div>
+      <div class="marker" style="left:50%; top:47.8%">4</div>
+      <div class="marker" style="left:50%; top:61.4%">5</div>
+      <div class="marker" style="left:50%; top:70.5%">6</div>
+      <div class="marker" style="left:50%; top:77.9%">7</div>
+      <div class="marker" style="left:50%; top:88.5%">8</div>
+    </div>
+    <div class="region-list">
+      <div class="region"><div class="badge-num">1</div><div>
+        <div class="r-name">Mode &amp; Hands</div>
+        <div class="r-members mono">operatingMode · hands</div>
+        <div class="r-desc">The top-level job (Repair/Reduce/Transform) and which hand(s) it touches.</div>
+      </div></div>
+      <div class="region"><div class="badge-num">2</div><div>
+        <div class="r-name">Voice Limits</div>
+        <div class="r-members mono">maxVoices · handVoices(→§02) · splitNote · maxNotesPerHand · maxSpan · crossoverSlack</div>
+        <div class="r-desc">How many notes per hand survive and where the hand split falls — the direct levers on "impossible for two hands" complaints.</div>
+      </div></div>
+      <div class="region"><div class="badge-num">3</div><div>
+        <div class="r-name">Timing</div>
+        <div class="r-members mono">lookaheadBeats · delayCompensationCc</div>
+        <div class="r-desc">How far ahead the streaming engine plans, and the CC that reports that constant delay to OrchCapture downstream so capture timing stays aligned.</div>
+      </div></div>
+      <div class="region"><div class="badge-num">4</div><div>
+        <div class="r-name">Reduction Quality</div>
+        <div class="r-members mono">difficultyCeiling · revoice · lowIntervalStrictness · dynamicContour · maxRingBeats</div>
+        <div class="r-desc">The judgment calls: how hard the reduction is allowed to be, whether/how it re-voices to a comfortable register, and how long a note may ring before a re-strike.</div>
+      </div></div>
+      <div class="region"><div class="badge-num">5</div><div>
+        <div class="r-name">Articulation Toggles</div>
+        <div class="r-members mono">keepBassOctaves · keepMelodyOctaves · dampSuccessive · decisionLog</div>
+        <div class="r-desc">Octave-doubling protection for the two structurally important lines, the legato-cleanup damp rule, and whether to write the diagnostic decision log this whole debugging history has leaned on.</div>
+      </div></div>
+      <div class="region"><div class="badge-num">6</div><div>
+        <div class="r-name">Output Routing</div>
+        <div class="r-members mono">onsetWindowMs · outChannelBase</div>
+        <div class="r-desc">How wide a window counts as "one chord attack," and the base of the 4-channel lead/secondary × hand output map (see §02).</div>
+      </div></div>
+      <div class="region"><div class="badge-num">7</div><div>
+        <div class="r-name">Importance Weights</div>
+        <div class="r-members mono">wMelodyBass · wVelocity · wDouble</div>
+        <div class="r-desc">Advanced: the scoring weights <span class="mono">reduceHand</span> uses to decide which candidate notes survive a poly-cap. Rarely need touching.</div>
+      </div></div>
+      <div class="region"><div class="badge-num">8</div><div>
+        <div class="r-name">Keyswitch &amp; Figures</div>
+        <div class="r-members mono">excludeKsNotes · ksZoneMin · ksZoneMax · repeatedNoteTremolo</div>
+        <div class="r-desc">A backstop for keyswitch leakage from a single shared destination zone (OrchMerge's own per-Sender exclusion is the primary fix for a multi-zone rig), and whether a genuine repeated-note roll renders as a real octave tremolo.</div>
+      </div></div>
+    </div>
+  </div>
+  <div class="shot-caption">Real capture of the Standalone build, Reduce mode. The build subtitle names the most recent real fix — worth reading before trusting specific edge-case behavior.</div>
+
+  <div class="section-head"><span class="num">02</span><h2>The Output Channel Map</h2><div class="rule"></div></div>
+  <p class="section-note">Fixed, not a parameter — <span class="mono">outChannelBase</span> (default 1) only shifts where this table starts.</p>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Channel offset</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td class="pid">+0</td><td class="desc">RH lead / melody (Soprano)</td></tr>
+        <tr><td class="pid">+1</td><td class="desc">RH secondary (Alto)</td></tr>
+        <tr><td class="pid">+2</td><td class="desc">LH secondary (Tenor)</td></tr>
+        <tr><td class="pid">+3</td><td class="desc">LH lead / bass (Bass)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="readout-note">
+    <div class="dot"></div>
+    <p>The status line at the very bottom — <code>group N in / N kept / N dropped | melody … | bass … | split
+    C3 | buf N</code> — is the live per-onset-group decision readout, the fastest way to see the reduction engine
+    actually working without opening the full decision log file.</p>
+  </div>
+
+  <footer>
+    <span>Source: <span class="mono">Source/OrchPianoProcessor.cpp</span>, <span class="mono">createParameterLayout()</span> — regenerate this table if that function changes.</span>
+    <span>OrchPiano · <span class="mono">johnpascu77-dotcom</span></span>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -10,7 +10,7 @@ juce_add_plugin(OrchPiano
     PLUGIN_MANUFACTURER_CODE Jpas
     PLUGIN_CODE Ocpn
 
-    FORMATS VST3
+    FORMATS VST3 Standalone
 
     PRODUCT_NAME "OrchPiano"
     PLUGIN_NAME "OrchPiano"
